@@ -1,7 +1,11 @@
 package com.axiim.q.data
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
+import androidx.compose.ui.geometry.Offset
 import com.axiim.q.model.AudioDspSettings
 import com.axiim.q.model.AvrInput
 import com.axiim.q.model.CecPortDevice
@@ -18,6 +22,7 @@ import com.axiim.q.model.PersonalizeSettings
 import com.axiim.q.model.QuickTileId
 import com.axiim.q.model.RemoteKey
 import com.axiim.q.model.SpeakerChannel
+import com.axiim.q.model.SpeakerLayout
 import com.axiim.q.model.SystemCapabilities
 import com.axiim.q.model.VideoSignalTelemetry
 import com.axiim.q.model.WisaGroup
@@ -30,30 +35,36 @@ import com.axiim.q.network.PlayToQHttpServer
 import com.axiim.q.network.PlayToQServerState
 import com.axiim.q.network.RpcNotification
 import com.axiim.q.network.SsdpDiscoveryClient
+import com.axiim.q.network.primitiveOrNull
+import com.axiim.q.network.scalarOrNull
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 data class AxiimUiState(
   val selectedDevice: DiscoveredDevice = DefaultLiveSnapshot.defaultDevice,
   val devices: List<DiscoveredDevice> = listOf(DefaultLiveSnapshot.defaultDevice),
   val isDiscoveringSsdp: Boolean = false,
+  val isConnecting: Boolean = false,
   val isLiveTcpConnected: Boolean = false,
   val isSimulatedPreview: Boolean = false,
   val enabledQuickTiles: List<QuickTileId> = QuickTileId.defaultIds,
@@ -67,6 +78,8 @@ data class AxiimUiState(
   val showDisconnectedInputs: Boolean = false,
   val videoTelemetry: VideoSignalTelemetry = DefaultLiveSnapshot.defaultVideo,
   val speakers: List<WisaSpeaker> = DefaultLiveSnapshot.defaultSpeakers,
+  /** User-placed map positions (normalized 0..1), keyed by speaker id. */
+  val speakerPositions: Map<String, Offset> = emptyMap(),
   val groups: List<WisaGroup> = DefaultLiveSnapshot.defaultGroups,
   val activeToneSpeakerId: String? = null,
   val activeCalibrationNoiseChannel: SpeakerChannel? = null,
@@ -98,6 +111,11 @@ data class AxiimUiState(
 
   val activeEqPreset: EqualizerPreset
     get() = eqPresets.firstOrNull { it.active } ?: eqPresets.first()
+
+  /** Where to draw [speaker] on the placement map: the user's spot, else its channel's default. */
+  fun positionFor(speaker: WisaSpeaker): Offset =
+    speakerPositions[speaker.id]
+      ?: (SpeakerChannel.fromLoc(speaker.loc) ?: SpeakerChannel.CENTER).roomPosition
 }
 
 /**
@@ -504,7 +522,13 @@ object DefaultLiveSnapshot {
 }
 
 class AxiimRepository(private val context: Context?) {
-  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  // Last line of defense: an unexpected exception in any background RPC / socket coroutine is
+  // logged instead of taking the whole app down (the default handler kills the process).
+  private val crashGuard =
+    CoroutineExceptionHandler { _, throwable ->
+      Log.e(TAG, "Background task failed", throwable)
+    }
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard)
   private val prefs = context?.getSharedPreferences("axiim_q_prefs", Context.MODE_PRIVATE)
 
   val ssdpClient = SsdpDiscoveryClient(context)
@@ -517,8 +541,18 @@ class AxiimRepository(private val context: Context?) {
   val state: StateFlow<AxiimUiState> = _state.asStateFlow()
 
   private var volumeDebounceJob: Job? = null
+  private var lastVolumeSentMs = 0L
   private var setupKeepaliveJob: Job? = null
   private var heartbeatJob: Job? = null
+  private var connectJob: Job? = null
+  private var bannerJob: Job? = null
+  private val debouncedJobs = mutableMapOf<String, Job>()
+
+  private companion object {
+    const val TAG = "AxiimRepository"
+    const val SLIDER_DEBOUNCE_MS = 150L
+    const val VOLUME_THROTTLE_MS = 120L
+  }
 
   init {
     loadSavedDevice()
@@ -534,6 +568,7 @@ class AxiimRepository(private val context: Context?) {
     val savedUuid = prefs?.getString("zopa_uuid", null) ?: DefaultLiveSnapshot.defaultDevice.uuid
     val savedAccent = prefs?.getString("zopa_accent", null) ?: DefaultLiveSnapshot.defaultDevice.accentColor
     val savedQuickTilesCsv = prefs?.getString("quick_tiles_csv", null)
+    val savedSpeakerPositions = SpeakerLayout.decode(prefs?.getString("speaker_positions", null))
     val enabledTiles =
       if (savedQuickTilesCsv != null) {
         savedQuickTilesCsv
@@ -556,6 +591,7 @@ class AxiimRepository(private val context: Context?) {
         selectedDevice = device,
         devices = listOf(device),
         enabledQuickTiles = enabledTiles,
+        speakerPositions = savedSpeakerPositions,
         personalize = it.personalize.copy(deviceName = savedName, accentColor = savedAccent),
       )
     }
@@ -580,6 +616,19 @@ class AxiimRepository(private val context: Context?) {
       saveQuickTiles(updated)
       current.copy(enabledQuickTiles = updated)
     }
+  }
+
+  fun setSpeakerPosition(speakerId: String, position: Offset) {
+    _state.update { current ->
+      val updated = current.speakerPositions + (speakerId to SpeakerLayout.clamp(position))
+      prefs?.edit()?.putString("speaker_positions", SpeakerLayout.encode(updated))?.apply()
+      current.copy(speakerPositions = updated)
+    }
+  }
+
+  fun resetSpeakerPositions() {
+    prefs?.edit()?.remove("speaker_positions")?.apply()
+    _state.update { it.copy(speakerPositions = emptyMap()) }
   }
 
   fun resetQuickTilesToDefault() {
@@ -616,7 +665,12 @@ class AxiimRepository(private val context: Context?) {
     }
     scope.launch {
       rpcClient.notifications.collect { notification ->
-        handlePushNotification(notification)
+        // A malformed push must not end the collector (and with it every future push update).
+        try {
+          handlePushNotification(notification)
+        } catch (e: Exception) {
+          Log.w(TAG, "Ignoring malformed push ${notification.method}", e)
+        }
       }
     }
   }
@@ -642,8 +696,8 @@ class AxiimRepository(private val context: Context?) {
     when (notification.method) {
       "audio.volume_changed" -> {
         val obj = params as? JsonObject ?: return
-        val vol = obj["volume"]?.jsonPrimitive?.intOrNull ?: return
-        val muted = obj["muted"]?.jsonPrimitive?.booleanOrNull ?: false
+        val vol = obj["volume"]?.primitiveOrNull?.intOrNull ?: return
+        val muted = obj["muted"]?.primitiveOrNull?.booleanOrNull ?: false
         // Per docs/events.md line 47: ignore incoming volume_changed while user is dragging slider
         _state.update { current ->
           if (current.isUserDraggingVolume) {
@@ -670,7 +724,7 @@ class AxiimRepository(private val context: Context?) {
       }
       "power.power_state" -> {
         val obj = params as? JsonObject ?: return
-        val powered = obj["powered"]?.jsonPrimitive?.booleanOrNull ?: return
+        val powered = obj["powered"]?.primitiveOrNull?.booleanOrNull ?: return
         _state.update { it.copy(powered = powered) }
       }
       "nowplaying.new_item" -> {
@@ -685,7 +739,7 @@ class AxiimRepository(private val context: Context?) {
         }
       }
       "theme.accent-color" -> {
-        val color = params?.jsonPrimitive?.contentOrNull ?: return
+        val color = params.scalarOrNull()?.contentOrNull ?: return
         _state.update {
           it.copy(
             selectedDevice = it.selectedDevice.copy(accentColor = color),
@@ -694,7 +748,7 @@ class AxiimRepository(private val context: Context?) {
         }
       }
       "system.device-name" -> {
-        val name = params?.jsonPrimitive?.contentOrNull ?: return
+        val name = params.scalarOrNull()?.contentOrNull ?: return
         _state.update {
           it.copy(
             selectedDevice = it.selectedDevice.copy(name = name),
@@ -703,7 +757,7 @@ class AxiimRepository(private val context: Context?) {
         }
       }
       "diagnostic.customer" -> {
-        val customer = params?.jsonPrimitive?.contentOrNull ?: return
+        val customer = params.scalarOrNull()?.contentOrNull ?: return
         _state.update { it.copy(customerEmail = customer) }
       }
     }
@@ -713,54 +767,59 @@ class AxiimRepository(private val context: Context?) {
    * Connects to the selected Axiim Q on TCP 3000 and executes the initialization sequence
    * documented in `docs/transport.md` lines 18-24 plus full state hydration.
    */
-  fun connectToSelectedDevice() {
-    val device = _state.value.selectedDevice
-    scope.launch {
-      _state.update { it.copy(isDiscoveringSsdp = true) }
-      val connected = rpcClient.connect(device.ip, device.rpcPort)
-      if (connected) {
-        _state.update {
-          it.copy(
-            isDiscoveringSsdp = false,
-            isLiveTcpConnected = true,
-            isSimulatedPreview = false,
-          )
-        }
-        refreshFullDeviceState()
-      } else {
-        // Try SSDP discovery to see if the Axiim Q is on a new IP
-        val found = ssdpClient.discoverDevices()
-        val match =
-          found.firstOrNull { it.uuid == device.uuid } ?: found.firstOrNull()
-        if (match != null && match.ip != device.ip) {
-          saveSelectedDevice(match)
-          _state.update {
-            it.copy(
-              selectedDevice = match,
-              devices = (it.devices.filterNot { d -> d.uuid == match.uuid } + match),
-            )
-          }
-          val reconnected = rpcClient.connect(match.ip, match.rpcPort)
-          _state.update {
-            it.copy(
-              isDiscoveringSsdp = false,
-              isLiveTcpConnected = reconnected,
-              isSimulatedPreview = false,
-            )
-          }
-          if (reconnected) {
-            refreshFullDeviceState()
-          }
-        } else {
-          _state.update {
-            it.copy(
-              isDiscoveringSsdp = false,
-              isLiveTcpConnected = false,
-              isSimulatedPreview = false,
-            )
+  /**
+   * Connects (or reconnects) to the selected device. When [force] is false and a connection attempt
+   * is already running, the call is ignored; when true the running attempt is replaced.
+   */
+  fun connectToSelectedDevice(force: Boolean = true) {
+    if (!force && connectJob?.isActive == true) return
+    connectJob?.cancel()
+    connectJob =
+      scope.launch {
+        try {
+          connectAndHydrate()
+        } finally {
+          // A superseded attempt must not clear the flag owned by its replacement.
+          if (connectJob === coroutineContext[Job]) {
+            _state.update { it.copy(isConnecting = false) }
           }
         }
       }
+  }
+
+  /** Tapping the Connected pill: drop the current session and reconnect to the selected Q. */
+  fun reconnect() {
+    connectToSelectedDevice(force = true)
+  }
+
+  private suspend fun connectAndHydrate() {
+    val device = _state.value.selectedDevice
+    _state.update { it.copy(isConnecting = true) }
+    val connected = rpcClient.connect(device.ip, device.rpcPort)
+    if (connected) {
+      _state.update { it.copy(isLiveTcpConnected = true, isSimulatedPreview = false) }
+      refreshFullDeviceState()
+      return
+    }
+
+    // Try SSDP discovery to see if the Axiim Q is on a new IP
+    val found = ssdpClient.discoverDevices()
+    val match = found.firstOrNull { it.uuid == device.uuid } ?: found.firstOrNull()
+    if (match != null && match.ip != device.ip) {
+      saveSelectedDevice(match)
+      _state.update {
+        it.copy(
+          selectedDevice = match,
+          devices = (it.devices.filterNot { d -> d.uuid == match.uuid } + match),
+        )
+      }
+      val reconnected = rpcClient.connect(match.ip, match.rpcPort)
+      _state.update { it.copy(isLiveTcpConnected = reconnected, isSimulatedPreview = false) }
+      if (reconnected) {
+        refreshFullDeviceState()
+      }
+    } else {
+      _state.update { it.copy(isLiveTcpConnected = false, isSimulatedPreview = false) }
     }
   }
 
@@ -773,7 +832,7 @@ class AxiimRepository(private val context: Context?) {
     val accent = rpcClient.getAccentColor()
     val volMute = rpcClient.getVolume()
     val caps = rpcClient.getSystemCapabilities()
-    val customer = rpcClient.getSetting("diagnostic.customer")?.jsonPrimitive?.contentOrNull
+    val customer = rpcClient.getSetting("diagnostic.customer").scalarOrNull()?.contentOrNull
     val power = rpcClient.getPowerState()
 
     val inputs = rpcClient.getInputList()
@@ -852,23 +911,65 @@ class AxiimRepository(private val context: Context?) {
     heartbeatJob?.cancel()
     heartbeatJob =
       scope.launch {
+        var missedHeartbeats = 0
         while (isActive) {
           if (rpcClient.isConnected.value) {
-            delay(30_000L)
+            // Wake immediately if the connection drops instead of sleeping the full 30 s.
+            val dropped = withTimeoutOrNull(30_000L) { rpcClient.isConnected.first { !it } }
+            if (dropped != null) continue
             val power = rpcClient.getPowerState()
             if (power != null) {
+              missedHeartbeats = 0
               _state.update { it.copy(powered = power) }
+            } else if (++missedHeartbeats >= 2 && connectJob?.isActive != true) {
+              // Half-open socket (e.g. the Q lost power): force a reconnect.
+              missedHeartbeats = 0
+              rpcClient.disconnect()
             }
           } else {
             // Auto-connect in background when disconnected
+            missedHeartbeats = 0
             delay(6_000L)
             if (!rpcClient.isConnected.value && !_state.value.isDiscoveringSsdp) {
-              connectToSelectedDevice()
+              connectToSelectedDevice(force = false)
             }
           }
         }
       }
   }
+
+  /** Cancels every background job and releases sockets. The repository is unusable afterwards. */
+  fun close() {
+    ipAudioReceiver.stop()
+    playToQServer.stop()
+    rpcClient.disconnect()
+    scope.cancel()
+  }
+
+  private fun showBanner(message: String) {
+    bannerJob?.cancel()
+    _state.update { it.copy(statusBannerMessage = message) }
+    bannerJob =
+      scope.launch {
+        delay(4_000L)
+        _state.update { if (it.statusBannerMessage == message) it.copy(statusBannerMessage = null) else it }
+      }
+  }
+
+  /** Coalesces rapid slider changes into one RPC per [key] once the value settles. */
+  private fun debounced(key: String, block: suspend () -> Unit) {
+    synchronized(debouncedJobs) {
+      debouncedJobs[key]?.cancel()
+      debouncedJobs[key] =
+        scope.launch {
+          delay(SLIDER_DEBOUNCE_MS)
+          block()
+        }
+    }
+  }
+
+  /** The phone's address as seen from the Q: prefer the interface of the live RPC socket. */
+  private fun resolvePhoneLanIp(): String? = rpcClient.localAddress ?: PlayToQHttpServer.resolveLocalLanIp()
 
   // ============================================================================
   // SSDP Discovery & Device Selection (docs/discovery.md & docs/pairing.md)
@@ -876,9 +977,15 @@ class AxiimRepository(private val context: Context?) {
 
   fun runSsdpDiscoverySweep() {
     if (_state.value.isDiscoveringSsdp) return
+    _state.update { it.copy(isDiscoveringSsdp = true) }
     scope.launch {
-      _state.update { it.copy(isDiscoveringSsdp = true) }
-      val found = ssdpClient.discoverDevices()
+      val found =
+        try {
+          ssdpClient.discoverDevices()
+        } catch (e: Exception) {
+          _state.update { it.copy(isDiscoveringSsdp = false) }
+          throw e
+        }
       _state.update { current ->
         val foundByUuid = found.associateBy { it.uuid }
         val updatedKnown =
@@ -971,20 +1078,27 @@ class AxiimRepository(private val context: Context?) {
 
   fun onVolumeChange(newVolume: Int) {
     val clamped = newVolume.coerceIn(0, 100)
+    if (clamped == _state.value.volume && !_state.value.muted) return
     _state.update { it.copy(volume = clamped, muted = false) }
+    // Throttle (not debounce): the Q follows the slider live during a drag, at most every 120 ms,
+    // with a trailing send so the final position always lands.
     volumeDebounceJob?.cancel()
+    val now = SystemClock.elapsedRealtime()
+    val wait = (VOLUME_THROTTLE_MS - (now - lastVolumeSentMs)).coerceAtLeast(0L)
     volumeDebounceJob =
       scope.launch {
-        delay(120L) // Smooth throttle (improved responsiveness over original 400ms)
-        rpcClient.setVolume(clamped)
+        delay(wait)
+        lastVolumeSentMs = SystemClock.elapsedRealtime()
+        rpcClient.setVolume(_state.value.volume)
       }
   }
 
   fun onVolumeDragEnd() {
-    val finalVol = _state.value.volume
     _state.update { it.copy(isUserDraggingVolume = false) }
+    volumeDebounceJob?.cancel()
     scope.launch {
-      rpcClient.setVolume(finalVol)
+      lastVolumeSentMs = SystemClock.elapsedRealtime()
+      rpcClient.setVolume(_state.value.volume)
     }
   }
 
@@ -1114,9 +1228,7 @@ class AxiimRepository(private val context: Context?) {
         if (it.channel == channel) it.copy(volumeDb = clamped) else it
       }
     _state.update { it.copy(channelTrims = updated) }
-    scope.launch {
-      rpcClient.setChannelVolumes(updated)
-    }
+    debounced("channelTrims") { rpcClient.setChannelVolumes(_state.value.channelTrims) }
   }
 
   fun toggleLevelCalibrationNoise(channel: SpeakerChannel) {
@@ -1137,9 +1249,7 @@ class AxiimRepository(private val context: Context?) {
         if (it.channel == channel) it.copy(distanceFeet = rounded) else it
       }
     _state.update { it.copy(channelDistances = updated) }
-    scope.launch {
-      rpcClient.setChannelDistances(updated)
-    }
+    debounced("channelDistances") { rpcClient.setChannelDistances(_state.value.channelDistances) }
   }
 
   fun selectEqPreset(presetName: String) {
@@ -1154,6 +1264,7 @@ class AxiimRepository(private val context: Context?) {
         lastActiveEqPresetName = nextLastActive,
       )
     }
+    synchronized(debouncedJobs) { debouncedJobs.remove("equalizer")?.cancel() }
     scope.launch {
       rpcClient.setEqualizer(target.copy(active = true))
     }
@@ -1220,8 +1331,8 @@ class AxiimRepository(private val context: Context?) {
       }
 
     _state.update { it.copy(eqPresets = updatedPresets) }
-    modifiedPreset?.let { eq ->
-      scope.launch { rpcClient.setEqualizer(eq) }
+    if (modifiedPreset != null) {
+      debounced("equalizer") { rpcClient.setEqualizer(_state.value.activeEqPreset) }
     }
   }
 
@@ -1235,9 +1346,7 @@ class AxiimRepository(private val context: Context?) {
         eqPresets = current.eqPresets.map { if (it.name == active.name) updatedActive else it },
       )
     }
-    scope.launch {
-      rpcClient.setEqualizer(updatedActive)
-    }
+    debounced("equalizer") { rpcClient.setEqualizer(_state.value.activeEqPreset) }
   }
 
   // ============================================================================
@@ -1320,7 +1429,9 @@ class AxiimRepository(private val context: Context?) {
   fun setStartupHighVolume(limit: Int) {
     val clamped = limit.coerceIn(10, 80)
     _state.update { it.copy(dspSettings = it.dspSettings.copy(highVolume = clamped)) }
-    scope.launch { rpcClient.setSetting("audio.high_volume", JsonPrimitive(clamped)) }
+    debounced("highVolume") {
+      rpcClient.setSetting("audio.high_volume", JsonPrimitive(_state.value.dspSettings.highVolume))
+    }
   }
 
   fun toggleFrontBlueLed(enabled: Boolean) {
@@ -1373,12 +1484,8 @@ class AxiimRepository(private val context: Context?) {
   }
 
   fun enableBluetoothPairing() {
-    _state.update {
-      it.copy(
-        bluetoothDiscoverableActive = true,
-        statusBannerMessage = "Axiim Q Bluetooth A2DP sink is now discoverable for pairing",
-      )
-    }
+    _state.update { it.copy(bluetoothDiscoverableActive = true) }
+    showBanner("Axiim Q is now discoverable for Bluetooth pairing")
     scope.launch {
       rpcClient.enableBluetoothDiscovery()
       delay(30_000L)
@@ -1394,29 +1501,53 @@ class AxiimRepository(private val context: Context?) {
     if (_state.value.ipAudio.isStreaming) {
       ipAudioReceiver.stop()
     } else {
-      val localIp = PlayToQHttpServer.resolveLocalLanIp()
-      ipAudioReceiver.start(localIp, isSimulatedMode = _state.value.isSimulatedPreview)
+      val localIp = resolvePhoneLanIp()
+      if (localIp == null) {
+        showBanner("Couldn't find this phone's Wi-Fi address")
+        return
+      }
+      if (!ipAudioReceiver.start(localIp, isSimulatedMode = _state.value.isSimulatedPreview)) {
+        showBanner("Couldn't open an audio port on this phone")
+      }
     }
   }
 
   fun startPlayToQFromUri(uri: Uri, fileName: String, mimeType: String) {
     val mediaType = if (mimeType.startsWith("video")) "video" else "music"
-    val streamUrl = playToQServer.startServingUri(uri, fileName, mimeType, mediaType)
-    _state.update {
-      it.copy(
-        isMediaPlaying = true,
-        nowPlaying =
-          NowPlayingItem(
-            type = mediaType,
-            id = 999,
-            title = fileName,
-            artist = "Streaming from Phone (:9999)",
-            album = streamUrl,
-            runtime = 240,
-          ),
-      )
+    // Keep read access to the picked document for the whole stream, even if the activity is recreated.
+    context?.let { ctx ->
+      runCatching {
+        ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
     }
     scope.launch {
+      val localIp = resolvePhoneLanIp()
+      if (localIp == null) {
+        showBanner("Couldn't find this phone's Wi-Fi address")
+        return@launch
+      }
+      val streamUrl =
+        try {
+          playToQServer.startServingUri(uri, fileName, mimeType, mediaType, localIp)
+        } catch (e: Exception) {
+          Log.w(TAG, "Play to Q server failed to start", e)
+          showBanner("Couldn't start streaming: ${e.message ?: "unknown error"}")
+          return@launch
+        }
+      _state.update {
+        it.copy(
+          isMediaPlaying = true,
+          nowPlaying =
+            NowPlayingItem(
+              type = mediaType,
+              id = 999,
+              title = fileName,
+              artist = "Streaming from Phone",
+              album = streamUrl,
+              runtime = 0,
+            ),
+        )
+      }
       rpcClient.playRemoteStream(mediaType, streamUrl)
     }
   }
@@ -1521,16 +1652,13 @@ class AxiimRepository(private val context: Context?) {
             code = "DIAG-${(1000..9999).random()}",
             description = description.trim(),
           )
-      _state.update {
-        it.copy(
-          diagnosticHistory = listOf(report) + it.diagnosticHistory,
-          statusBannerMessage = "Submitted diagnostic report ${report.code}",
-        )
-      }
+      _state.update { it.copy(diagnosticHistory = listOf(report) + it.diagnosticHistory) }
+      showBanner("Submitted diagnostic report ${report.code}")
     }
   }
 
   fun dismissStatusBanner() {
+    bannerJob?.cancel()
     _state.update { it.copy(statusBannerMessage = null) }
   }
 }

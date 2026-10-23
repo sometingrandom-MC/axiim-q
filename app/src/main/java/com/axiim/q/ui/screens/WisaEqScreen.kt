@@ -88,6 +88,18 @@ import com.axiim.q.theme.StaggeredEntrance
 import com.axiim.q.theme.glassEffect
 import com.axiim.q.theme.holoGlow
 import java.util.Locale
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntSize
+import com.axiim.q.model.SpeakerLayout
+import com.axiim.q.model.WisaSpeaker
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -206,6 +218,8 @@ fun WisaEqScreen(
               view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
               repository.toggleSpeakerIdentificationTone(speakerId)
             },
+            onMoveSpeaker = repository::setSpeakerPosition,
+            onResetLayout = repository::resetSpeakerPositions,
           )
         }
 
@@ -539,7 +553,39 @@ private fun RoomSpeakerMapCard(
   controlsAlpha: Float,
   onToggleSetupMode: () -> Unit,
   onToggleSpeakerTone: (String) -> Unit,
+  onMoveSpeaker: (String, Offset) -> Unit,
+  onResetLayout: () -> Unit,
 ) {
+  val view = LocalView.current
+  val haptic = LocalHapticFeedback.current
+  val textMeasurer = rememberTextMeasurer()
+  val labelColor = MaterialTheme.colorScheme.onSurface
+  val labelStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+  val hitRadiusPx = with(LocalDensity.current) { 28.dp.toPx() }
+
+  // Gesture detectors are long-lived; read the latest values through these instead of restarting them.
+  val currentState by rememberUpdatedState(state)
+  val currentIsConnected by rememberUpdatedState(isConnected)
+  val currentOnTone by rememberUpdatedState(onToggleSpeakerTone)
+  val currentOnMove by rememberUpdatedState(onMoveSpeaker)
+
+  var draggingId by remember { mutableStateOf<String?>(null) }
+  var dragRaw by remember { mutableStateOf(Offset.Zero) }
+  var dragSnap by remember { mutableStateOf<SpeakerLayout.Snap?>(null) }
+
+  fun nearestSpeaker(touch: Offset, size: IntSize): WisaSpeaker? {
+    val (speaker, distance) =
+      currentState.speakers
+        .map { sp ->
+          val p = currentState.positionFor(sp)
+          sp to (Offset(p.x * size.width, p.y * size.height) - touch).getDistance()
+        }.minByOrNull { it.second } ?: return null
+    return speaker.takeIf { distance <= hitRadiusPx }
+  }
+
+  fun snapTargets(excludingId: String): List<Offset> =
+    currentState.speakers.filter { it.id != excludingId }.map { currentState.positionFor(it) } + ListenerPosition
+
   Box(
     modifier =
       Modifier
@@ -569,10 +615,26 @@ private fun RoomSpeakerMapCard(
             fontWeight = FontWeight.Bold,
           )
           Text(
-            text = "Tap any speaker to play an identification chime",
+            text = "Tap to chime · hold & drag to move",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
+          if (state.speakerPositions.isNotEmpty()) {
+            Text(
+              text = "Reset layout",
+              style = MaterialTheme.typography.labelMedium,
+              color = HoloBlueBright,
+              modifier =
+                Modifier
+                  .padding(top = 4.dp)
+                  .clip(RoundedCornerShape(8.dp))
+                  .clickable {
+                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onResetLayout()
+                  }
+                  .padding(vertical = 4.dp),
+            )
+          }
         }
         FilledTonalButton(
           onClick = onToggleSetupMode,
@@ -591,32 +653,50 @@ private fun RoomSpeakerMapCard(
             .height(210.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f))
-            .pointerInput(speakers, isConnected) {
-              if (!isConnected) return@pointerInput
-              detectTapGestures { tapOffset ->
-                val hit =
-                  speakers.minByOrNull { sp ->
-                    val ch = SpeakerChannel.fromLoc(sp.loc) ?: SpeakerChannel.CENTER
-                    val px = ch.roomPosition.x * size.width
-                    val py = ch.roomPosition.y * size.height
-                    val dx = tapOffset.x - px
-                    val dy = tapOffset.y - py
-                    dx * dx + dy * dy
-                  }
-                if (hit != null) {
-                  val ch = SpeakerChannel.fromLoc(hit.loc) ?: SpeakerChannel.CENTER
-                  val px = ch.roomPosition.x * size.width
-                  val py = ch.roomPosition.y * size.height
-                  val distSq = (tapOffset.x - px) * (tapOffset.x - px) + (tapOffset.y - py) * (tapOffset.y - py)
-                  if (distSq <= 110f * 110f) {
-                    onToggleSpeakerTone(hit.id)
-                  }
-                }
+            .pointerInput(Unit) {
+              detectTapGestures(
+                // A hold belongs to the drag detector; without this a hold-and-release would also chime.
+                onLongPress = {},
+                onTap = { tap ->
+                  if (!currentIsConnected) return@detectTapGestures
+                  nearestSpeaker(tap, size)?.let { currentOnTone(it.id) }
+                },
+              )
+            }
+            .pointerInput(Unit) {
+              fun endDrag(commit: Boolean) {
+                val id = draggingId
+                val snap = dragSnap
+                if (commit && id != null && snap != null) currentOnMove(id, snap.position)
+                draggingId = null
+                dragSnap = null
               }
+              detectDragGesturesAfterLongPress(
+                onDragStart = { start ->
+                  val speaker = nearestSpeaker(start, size) ?: return@detectDragGesturesAfterLongPress
+                  haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                  draggingId = speaker.id
+                  dragRaw = currentState.positionFor(speaker)
+                  dragSnap = SpeakerLayout.snap(dragRaw, snapTargets(speaker.id))
+                },
+                onDrag = { _, amount ->
+                  val id = draggingId ?: return@detectDragGesturesAfterLongPress
+                  dragRaw = SpeakerLayout.clamp(dragRaw + Offset(amount.x / size.width, amount.y / size.height))
+                  val next = SpeakerLayout.snap(dragRaw, snapTargets(id))
+                  val previous = dragSnap
+                  val newAlignment =
+                    (next.alignedX != null && next.alignedX != previous?.alignedX) ||
+                      (next.alignedY != null && next.alignedY != previous?.alignedY)
+                  if (newAlignment) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                  dragSnap = next
+                },
+                onDragEnd = { endDrag(commit = true) },
+                onDragCancel = { endDrag(commit = false) },
+              )
             },
       ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-          val center = Offset(size.width * 0.5f, size.height * 0.54f)
+          val center = Offset(size.width * ListenerPosition.x, size.height * ListenerPosition.y)
           drawCircle(
             color = HoloBlueCore.copy(alpha = 0.10f),
             radius = size.minDimension * 0.36f,
@@ -628,10 +708,41 @@ private fun RoomSpeakerMapCard(
             center = center,
           )
 
+          // Alignment guides while dragging
+          dragSnap?.let { snap ->
+            val guide = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 6.dp.toPx()))
+            snap.alignedX?.let { x ->
+              drawLine(
+                color = HoloBlueBright.copy(alpha = 0.5f),
+                start = Offset(x * size.width, 0f),
+                end = Offset(x * size.width, size.height),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = guide,
+              )
+            }
+            snap.alignedY?.let { y ->
+              drawLine(
+                color = HoloBlueBright.copy(alpha = 0.5f),
+                start = Offset(0f, y * size.height),
+                end = Offset(size.width, y * size.height),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = guide,
+              )
+            }
+          }
+
           speakers.forEach { sp ->
             val ch = SpeakerChannel.fromLoc(sp.loc) ?: SpeakerChannel.CENTER
-            val pos = Offset(ch.roomPosition.x * size.width, ch.roomPosition.y * size.height)
+            val isDragging = sp.id == draggingId
+            val normalized = if (isDragging) dragSnap?.position ?: state.positionFor(sp) else state.positionFor(sp)
+            val pos = Offset(normalized.x * size.width, normalized.y * size.height)
             val isPlayingTone = state.activeToneSpeakerId == sp.id
+            val radius =
+              when {
+                isDragging -> 18.dp.toPx()
+                isPlayingTone -> 16.dp.toPx()
+                else -> 12.dp.toPx()
+              }
             drawLine(
               color =
                 if (isPlayingTone) {
@@ -644,9 +755,28 @@ private fun RoomSpeakerMapCard(
               strokeWidth = if (isPlayingTone) 2.5.dp.toPx() else 1.dp.toPx(),
             )
             drawCircle(
-              color = if (isPlayingTone) HoloBlueBright else HoloBlueCore,
-              radius = if (isPlayingTone) 16.dp.toPx() else 12.dp.toPx(),
+              color = if (isPlayingTone || isDragging) HoloBlueBright else HoloBlueCore,
+              radius = radius,
               center = pos,
+            )
+
+            // Channel label below the dot (above it near the bottom edge so it isn't clipped)
+            val label = textMeasurer.measure(ch.shortLabel, labelStyle)
+            val gap = 4.dp.toPx()
+            val labelY =
+              if (pos.y + radius + gap + label.size.height > size.height) {
+                pos.y - radius - gap - label.size.height
+              } else {
+                pos.y + radius + gap
+              }
+            drawText(
+              textLayoutResult = label,
+              color = if (isPlayingTone || isDragging) HoloBlueBright else labelColor,
+              topLeft =
+                Offset(
+                  (pos.x - label.size.width / 2f).coerceIn(0f, (size.width - label.size.width).coerceAtLeast(0f)),
+                  labelY,
+                ),
             )
           }
         }
@@ -654,6 +784,9 @@ private fun RoomSpeakerMapCard(
     }
   }
 }
+
+/** Listening position at the center of the room map (normalized). */
+private val ListenerPosition = Offset(0.5f, 0.54f)
 
 @Composable
 private fun ChannelLevelsAndDistanceCard(

@@ -3,6 +3,7 @@ package com.axiim.q.network
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.SystemClock
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -65,19 +66,24 @@ class IpAudioReceiver(
   private var playJob: Job? = null
   private var keepaliveJob: Job? = null
 
-  fun start(localIp: String, isSimulatedMode: Boolean) {
+  /** Starts receiving; returns false if the local UDP socket could not be opened. */
+  fun start(localIp: String, isSimulatedMode: Boolean): Boolean {
     stop()
     if (isSimulatedMode) {
       startSimulatedVisualizer()
-      return
+      return true
     }
 
     val pcmQueue = LinkedBlockingQueue<ByteArray>(256)
     val socket =
-      DatagramSocket(null).apply {
-        reuseAddress = true
-        bind(InetSocketAddress(0))
-        soTimeout = 500
+      try {
+        DatagramSocket(null).apply {
+          reuseAddress = true
+          bind(InetSocketAddress(0))
+          soTimeout = 500
+        }
+      } catch (_: Exception) {
+        return false
       }
     udpSocket = socket
     val boundPort = socket.localPort
@@ -169,7 +175,8 @@ class IpAudioReceiver(
           }.getOrNull()
 
         try {
-          audioTrack?.play()
+          if (audioTrack == null) return@launch
+          audioTrack.play()
           var prebuffering = true
           val prebufferQueue = mutableListOf<ByteArray>()
           var prebufferedBytes = 0
@@ -191,6 +198,8 @@ class IpAudioReceiver(
               audioTrack?.write(chunk, 0, chunk.size)
             }
           }
+        } catch (_: Exception) {
+          // AudioTrack failure (e.g. audio focus/device change); stop playback quietly
         } finally {
           runCatching {
             audioTrack?.stop()
@@ -198,6 +207,7 @@ class IpAudioReceiver(
           }
         }
       }
+    return true
   }
 
   private fun startSimulatedVisualizer() {
@@ -232,8 +242,14 @@ class IpAudioReceiver(
       }
   }
 
+  @Volatile private var lastVuUpdateMs = 0L
+
   private fun updateVuMetersFromPcm(pcm: ByteArray, packetsCount: Long) {
     if (pcm.size < 4) return
+    // RTP packets arrive hundreds of times per second; cap UI state updates at ~30 fps.
+    val now = SystemClock.elapsedRealtime()
+    if (now - lastVuUpdateMs < 33) return
+    lastVuUpdateMs = now
     var sumLeftSq = 0.0
     var sumRightSq = 0.0
     var frames = 0

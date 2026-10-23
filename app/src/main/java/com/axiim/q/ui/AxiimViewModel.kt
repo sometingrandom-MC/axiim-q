@@ -12,8 +12,6 @@ class AxiimViewModel(application: Application) : AndroidViewModel(application) {
 
   override fun onCleared() {
     super.onCleared()
-    repository.ipAudioReceiver.stop()
-    repository.playToQServer.stop()
-    repository.rpcClient.disconnect()
+    repository.close()
   }
 }

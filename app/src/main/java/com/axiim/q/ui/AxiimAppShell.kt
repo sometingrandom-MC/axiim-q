@@ -2,6 +2,7 @@ package com.axiim.q.ui
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.tween
@@ -9,7 +10,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,7 +53,6 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaul
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,22 +71,31 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.axiim.q.data.AxiimRepository
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.axiim.q.model.DiscoveredDevice
 import com.axiim.q.theme.AnimatedBackground
 import com.axiim.q.theme.AxiimQTheme
 import com.axiim.q.theme.GlassPopupDialog
 import com.axiim.q.theme.HoloBlueBright
 import com.axiim.q.theme.StaggeredEntrance
+import com.axiim.q.theme.StaggeredEntranceScope
+import com.axiim.q.theme.StatusConnectedGreen
+import com.axiim.q.theme.StatusScanningAmber
 import com.axiim.q.theme.glassEffect
 import com.axiim.q.ui.screens.DashboardScreen
 import com.axiim.q.ui.screens.RemoteScreen
 import com.axiim.q.ui.screens.SettingsScreen
 import com.axiim.q.ui.screens.WisaEqScreen
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 enum class AppDestinations(
   val label: String,
@@ -98,10 +110,13 @@ enum class AppDestinations(
 
 @Composable
 fun AxiimAppShell() {
-  val context = LocalContext.current
   val view = LocalView.current
-  val repository = remember { AxiimRepository(context.applicationContext) }
-  val state by repository.state.collectAsState()
+  val haptic = LocalHapticFeedback.current
+  // Owned by a ViewModel so rotation / theme changes don't spawn a second repository with its own
+  // sockets, heartbeat and port-9999 server.
+  val viewModel: AxiimViewModel = viewModel()
+  val repository = viewModel.repository
+  val state by repository.state.collectAsStateWithLifecycle()
 
   var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
   var showDeviceDialog by rememberSaveable { mutableStateOf(false) }
@@ -184,19 +199,21 @@ fun AxiimAppShell() {
                     Modifier.fillMaxSize()
                   },
               ) {
-                when (destination) {
-                  AppDestinations.HOME -> DashboardScreen(state = state, repository = repository)
-                  AppDestinations.AUDIO -> WisaEqScreen(state = state, repository = repository)
-                  AppDestinations.REMOTE -> RemoteScreen(state = state, repository = repository)
-                  AppDestinations.SETTINGS ->
-                    SettingsScreen(
-                      state = state,
-                      repository = repository,
-                      onOpenDeviceSwitcher = {
-                        repository.runSsdpDiscoverySweep()
-                        showDeviceDialog = true
-                      },
-                    )
+                StaggeredEntranceScope {
+                  when (destination) {
+                    AppDestinations.HOME -> DashboardScreen(state = state, repository = repository)
+                    AppDestinations.AUDIO -> WisaEqScreen(state = state, repository = repository)
+                    AppDestinations.REMOTE -> RemoteScreen(state = state, repository = repository)
+                    AppDestinations.SETTINGS ->
+                      SettingsScreen(
+                        state = state,
+                        repository = repository,
+                        onOpenDeviceSwitcher = {
+                          repository.runSsdpDiscoverySweep()
+                          showDeviceDialog = true
+                        },
+                      )
+                  }
                 }
               }
             }
@@ -213,10 +230,12 @@ fun AxiimAppShell() {
         contentAlignment = Alignment.BottomCenter,
       ) {
         val isConnected = state.isLiveTcpConnected
+        val isConnecting = state.isConnecting
         val isScanning = state.isDiscoveringSsdp
 
         val statusText =
           when {
+            isConnecting -> "Connecting..."
             isConnected -> "Connected"
             isScanning -> "Scanning..."
             else -> "Disconnected"
@@ -224,57 +243,111 @@ fun AxiimAppShell() {
 
         val statusColor =
           when {
-            isConnected -> Color(0xFF4CAF50)
-            isScanning -> Color(0xFFFFC107)
+            isConnecting || isScanning -> StatusScanningAmber
+            isConnected -> StatusConnectedGreen
             else -> MaterialTheme.colorScheme.error
           }
 
-        StaggeredEntrance(index = 2) {
-          Box(
-            modifier =
-              Modifier
-                .onGloballyPositioned { coords ->
-                  pillRootOffset = coords.positionInRoot()
-                }
-                .clip(RoundedCornerShape(25.dp)),
-            contentAlignment = Alignment.Center,
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          AnimatedVisibility(
+            visible = state.statusBannerMessage != null,
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut(),
           ) {
-            // Real-time backdrop blur of the screen content behind the Connected Pill
+            var lastMessage by remember { mutableStateOf("") }
+            state.statusBannerMessage?.let { lastMessage = it }
+            Text(
+              text = lastMessage,
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.inverseOnSurface,
+              modifier =
+                Modifier
+                  .padding(horizontal = 24.dp)
+                  .padding(bottom = 10.dp)
+                  .clip(RoundedCornerShape(16.dp))
+                  .background(MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.92f))
+                  .clickable { repository.dismissStatusBanner() }
+                  .padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+          }
+
+          StaggeredEntrance(index = 2) {
             Box(
               modifier =
                 Modifier
-                  .matchParentSize()
-                  .blur(18.dp)
-                  .drawWithContent {
-                    translate(left = -pillRootOffset.x, top = -pillRootOffset.y) {
-                      drawLayer(backdropGraphicsLayer)
-                    }
-                  },
-            )
+                  .onGloballyPositioned { coords ->
+                    pillRootOffset = coords.positionInRoot()
+                  }
+                  .clip(RoundedCornerShape(25.dp)),
+              contentAlignment = Alignment.Center,
+            ) {
+              // Real-time backdrop blur of the screen content behind the Connected Pill
+              Box(
+                modifier =
+                  Modifier
+                    .matchParentSize()
+                    .blur(18.dp)
+                    .drawWithContent {
+                      translate(left = -pillRootOffset.x, top = -pillRootOffset.y) {
+                        drawLayer(backdropGraphicsLayer)
+                      }
+                    },
+              )
 
-            AssistChip(
-              label = { Text(statusText) },
-              onClick = {
-                view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                repository.runSsdpDiscoverySweep()
-                showDeviceDialog = true
-              },
-              leadingIcon = {
-                Icon(
-                  imageVector = Icons.Filled.Circle,
-                  contentDescription = null,
-                  tint = statusColor,
-                  modifier = Modifier.size(10.dp),
-                )
-              },
-              shape = RoundedCornerShape(25.dp),
-              border = null,
-              colors =
-                AssistChipDefaults.assistChipColors(
-                  containerColor = Color.Transparent,
-                ),
-              modifier = Modifier.glassEffect(cornerRadius = 25.dp, alpha = 0.2f),
-            )
+              // Tap = reconnect to the current Q, hold = choose a different device. AssistChip has no
+              // long-click, so a hold is detected from its press interactions.
+              val pillInteractions = remember { MutableInteractionSource() }
+              var pillLongPressed by remember { mutableStateOf(false) }
+              val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
+              LaunchedEffect(pillInteractions) {
+                var holdJob: Job? = null
+                pillInteractions.interactions.collect { interaction ->
+                  when (interaction) {
+                    is PressInteraction.Press -> {
+                      pillLongPressed = false
+                      holdJob?.cancel()
+                      holdJob =
+                        launch {
+                          delay(longPressTimeout)
+                          pillLongPressed = true
+                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                          repository.runSsdpDiscoverySweep()
+                          showDeviceDialog = true
+                        }
+                    }
+                    is PressInteraction.Release, is PressInteraction.Cancel -> holdJob?.cancel()
+                  }
+                }
+              }
+
+              AssistChip(
+                label = { Text(statusText) },
+                onClick = {
+                  if (pillLongPressed) {
+                    pillLongPressed = false
+                  } else {
+                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    repository.reconnect()
+                  }
+                },
+                leadingIcon = {
+                  Icon(
+                    imageVector = Icons.Filled.Circle,
+                    contentDescription = null,
+                    tint = statusColor,
+                    modifier = Modifier.size(10.dp),
+                  )
+                },
+                shape = RoundedCornerShape(25.dp),
+                border = null,
+                colors =
+                  AssistChipDefaults.assistChipColors(
+                    containerColor = Color.Transparent,
+                  ),
+                interactionSource = pillInteractions,
+                modifier = Modifier.glassEffect(cornerRadius = 25.dp, alpha = 0.2f),
+              )
+            }
           }
         }
       }
@@ -295,7 +368,7 @@ fun AxiimAppShell() {
           },
           onRescan = {
             repository.runSsdpDiscoverySweep()
-            repository.connectToSelectedDevice()
+            if (!state.isLiveTcpConnected) repository.connectToSelectedDevice(force = false)
           },
           onDismiss = { showDeviceDialog = false },
         )
@@ -317,10 +390,6 @@ private fun DeviceSelectionDialog(
 ) {
   var showManualInput by remember { mutableStateOf(false) }
   var manualIp by remember { mutableStateOf("") }
-
-  LaunchedEffect(Unit) {
-    onRescan()
-  }
 
   GlassPopupDialog(
     title = "Select Device",

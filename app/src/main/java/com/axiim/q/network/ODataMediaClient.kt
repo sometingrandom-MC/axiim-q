@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * HTTP Port 80 client for the Axiim Q's OData v3/v4 media library REST endpoints
@@ -50,19 +49,19 @@ class ODataMediaClient {
 
         valueArr.mapNotNull { elem ->
           val obj = elem as? JsonObject ?: return@mapNotNull null
-          val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-          val title = obj["title"]?.jsonPrimitive?.contentOrNull ?: "Untitled #$id"
+          val id = obj["id"]?.primitiveOrNull?.contentOrNull ?: return@mapNotNull null
+          val title = obj["title"]?.primitiveOrNull?.contentOrNull ?: "Untitled #$id"
           val artist =
-            obj["artist"]?.jsonPrimitive?.contentOrNull
-              ?: obj["description"]?.jsonPrimitive?.contentOrNull
+            obj["artist"]?.primitiveOrNull?.contentOrNull
+              ?: obj["description"]?.primitiveOrNull?.contentOrNull
               ?: ""
-          val album = obj["album"]?.jsonPrimitive?.contentOrNull ?: ""
+          val album = obj["album"]?.primitiveOrNull?.contentOrNull ?: ""
           val thumbPath =
-            obj["thumbnail"]?.jsonPrimitive?.contentOrNull
-              ?: obj["image"]?.jsonPrimitive?.contentOrNull
+            obj["thumbnail"]?.primitiveOrNull?.contentOrNull
+              ?: obj["image"]?.primitiveOrNull?.contentOrNull
           val resolvedThumb =
             thumbPath?.let { if (it.startsWith("http")) it else "http://$hostIp$it" }
-          val runtime = obj["runtime"]?.jsonPrimitive?.intOrNull ?: 0
+          val runtime = obj["runtime"]?.primitiveOrNull?.intOrNull ?: 0
 
           ODataMediaItem(
             id = id,

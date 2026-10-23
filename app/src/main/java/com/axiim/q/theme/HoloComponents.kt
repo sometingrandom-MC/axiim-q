@@ -1,5 +1,6 @@
 package com.axiim.q.theme
 
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -46,12 +47,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -400,6 +402,24 @@ fun Modifier.holoGlow(
   intensity: Float = 1f,
 ): Modifier = holoGlow(isGlowing = isActive, cornerRadius = borderRadius, intensity = intensity)
 
+/** How long after a screen or dialog opens its [StaggeredEntrance] children still play an entrance. */
+private const val STAGGER_WINDOW_MS = 450L
+private const val STAGGER_STEP_MS = 100L
+private const val STAGGER_MAX_DELAY_MS = 500L
+
+private val LocalStaggerOrigin = compositionLocalOf<Long?> { null }
+
+/**
+ * Marks the moment a screen or dialog appeared. [StaggeredEntrance] children composed shortly after
+ * play the staggered entrance; children composed later (lazy-list rows scrolled into view, sections
+ * revealed by a toggle) render immediately instead of popping in with a delay.
+ */
+@Composable
+fun StaggeredEntranceScope(content: @Composable () -> Unit) {
+  val origin = remember { SystemClock.uptimeMillis() }
+  CompositionLocalProvider(LocalStaggerOrigin provides origin, content = content)
+}
+
 /**
  * Exact StaggeredEntrance animation and blur curve from BLE-Control (`StaggeredEntrance.kt`):
  * 100ms delay per index, 600ms tween enter + 600ms tween blur (16.dp -> 0.dp), 400ms exit.
@@ -409,13 +429,13 @@ fun StaggeredEntrance(
   index: Int,
   content: @Composable () -> Unit,
 ) {
-  var hasAnimated by rememberSaveable(index) { mutableStateOf(false) }
-  var visible by remember { mutableStateOf(hasAnimated) }
+  val origin = LocalStaggerOrigin.current
+  val shouldAnimate = remember { origin == null || SystemClock.uptimeMillis() - origin < STAGGER_WINDOW_MS }
+  var visible by remember { mutableStateOf(!shouldAnimate) }
   LaunchedEffect(Unit) {
-    if (!hasAnimated) {
-      delay(index * 100L)
+    if (!visible) {
+      delay((index * STAGGER_STEP_MS).coerceIn(0L, STAGGER_MAX_DELAY_MS))
       visible = true
-      hasAnimated = true
     }
   }
 
@@ -478,7 +498,9 @@ fun QuickSettingTile(
     animateColorAsState(
       targetValue =
         if (isActive && enabled) {
-          MaterialTheme.colorScheme.onPrimaryContainer
+          // The active tile is translucent glass over the backdrop, not a solid primaryContainer,
+          // so onPrimaryContainer had poor contrast; onSurface is tuned for that backdrop.
+          MaterialTheme.colorScheme.onSurface
         } else {
           MaterialTheme.colorScheme.onSurfaceVariant
         },
@@ -617,87 +639,89 @@ fun GlassPopupDialog(
     onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Box(
-      modifier =
-        Modifier
-          .fillMaxSize()
-          .padding(24.dp),
-      contentAlignment = Alignment.Center,
-    ) {
+    StaggeredEntranceScope {
       Box(
         modifier =
           Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(28.dp))
-            .glassEffect(cornerRadius = 28.dp, alpha = 0.15f)
-            .holoGlow(isGlowing = true, cornerRadius = 28.dp, intensity = 0.45f),
+            .fillMaxSize()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
       ) {
-        // Confined AnimatedBackground strictly inside the dialog area (from BLE-Control)
-        AnimatedBackground(modifier = Modifier.matchParentSize())
-
-        Column(
+        Box(
           modifier =
             Modifier
               .fillMaxWidth()
-              .padding(24.dp),
+              .clip(RoundedCornerShape(28.dp))
+              .glassEffect(cornerRadius = 28.dp, alpha = 0.15f)
+              .holoGlow(isGlowing = true, cornerRadius = 28.dp, intensity = 0.45f),
         ) {
-          StaggeredEntrance(index = 0) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-              )
-              if (headerTrailing != null) {
-                headerTrailing()
-              }
-            }
-          }
+          // Confined AnimatedBackground strictly inside the dialog area (from BLE-Control)
+          AnimatedBackground(modifier = Modifier.matchParentSize())
 
-          if (subtitle != null) {
-            Text(
-              text = subtitle,
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
-            )
-          } else {
-            Spacer(modifier = Modifier.height(16.dp))
-          }
-
-          content()
-
-          Row(
+          Column(
             modifier =
               Modifier
                 .fillMaxWidth()
-                .padding(top = 20.dp),
-            horizontalArrangement = Arrangement.End,
+                .padding(24.dp),
           ) {
-            if (dismissText != null) {
-              TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.padding(end = 8.dp),
+            StaggeredEntrance(index = 0) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
               ) {
                 Text(
-                  text = dismissText,
-                  fontWeight = FontWeight.SemiBold,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  text = title,
+                  style = MaterialTheme.typography.headlineSmall,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onSurface,
                 )
+                if (headerTrailing != null) {
+                  headerTrailing()
+                }
               }
             }
-            if (onConfirm != null) {
-              TextButton(onClick = onConfirm) {
-                Text(
-                  text = confirmText,
-                  fontWeight = FontWeight.SemiBold,
-                  color = MaterialTheme.colorScheme.primary,
-                )
+
+            if (subtitle != null) {
+              Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
+              )
+            } else {
+              Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            content()
+
+            Row(
+              modifier =
+                Modifier
+                  .fillMaxWidth()
+                  .padding(top = 20.dp),
+              horizontalArrangement = Arrangement.End,
+            ) {
+              if (dismissText != null) {
+                TextButton(
+                  onClick = onDismiss,
+                  modifier = Modifier.padding(end = 8.dp),
+                ) {
+                  Text(
+                    text = dismissText,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
+              if (onConfirm != null) {
+                TextButton(onClick = onConfirm) {
+                  Text(
+                    text = confirmText,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
+                }
               }
             }
           }

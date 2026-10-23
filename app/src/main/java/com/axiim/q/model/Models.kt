@@ -113,7 +113,7 @@ enum class SpeakerChannel(
 ) {
   FRONT_LEFT("FL", "fl", 1, "Front Left", "FL", Offset(0.20f, 0.20f)),
   FRONT_RIGHT("FR", "fr", 2, "Front Right", "FR", Offset(0.80f, 0.20f)),
-  SUBWOOFER("S", "s", 3, "Subwoofer", "SUB", Offset(0.22f, 0.10f)),
+  SUBWOOFER("S", "s", 3, "Subwoofer", "SUB", Offset(0.50f, 0.80f)),
   CENTER("C", "c", 4, "Center", "C", Offset(0.50f, 0.14f)),
   SIDE_LEFT("SL", "sl", 5, "Side Left", "SL", Offset(0.12f, 0.54f)),
   SIDE_RIGHT("SR", "sr", 6, "Side Right", "SR", Offset(0.88f, 0.54f)),

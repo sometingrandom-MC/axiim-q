@@ -115,7 +115,7 @@ fun DashboardScreen(
     when {
       isConnected && state.powered -> "Playing from ${state.activeInput.label}"
       isConnected && !state.powered -> "${state.selectedDevice.name} is in Standby"
-      state.isDiscoveringSsdp -> "Searching for ${state.selectedDevice.name}..."
+      state.isConnecting || state.isDiscoveringSsdp -> "Searching for ${state.selectedDevice.name}..."
       else -> "${state.selectedDevice.name} Offline"
     }
 
@@ -136,7 +136,7 @@ fun DashboardScreen(
         if (activeModeSummary.isNotEmpty()) "$volText • $activeModeSummary" else volText
       }
       isConnected && !state.powered -> "Flip the System Power switch below to wake your sound system."
-      state.isDiscoveringSsdp -> "Auto-connecting over your Wi-Fi network..."
+      state.isConnecting || state.isDiscoveringSsdp -> "Auto-connecting over your Wi-Fi network..."
       else -> "Controls will wake automatically as soon as your Axiim Q responds."
     }
 

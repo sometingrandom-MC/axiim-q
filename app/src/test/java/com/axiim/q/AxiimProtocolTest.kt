@@ -1,15 +1,19 @@
 package com.axiim.q
 
 import com.axiim.q.model.QuickTileId
+import androidx.compose.ui.geometry.Offset
 import com.axiim.q.model.SpeakerChannel
+import com.axiim.q.model.SpeakerLayout
 import com.axiim.q.network.AxiimRpcClient
 import com.axiim.q.network.JsonFrameExtractor
+import com.axiim.q.network.PlayToQHttpServer
 import com.axiim.q.network.SsdpDiscoveryClient
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -82,11 +86,45 @@ class AxiimProtocolTest {
     assertEquals(4, SpeakerChannel.CENTER.eqIndex)
   }
 
-  @Test(expected = IllegalArgumentException::class)
+  @Test
   fun rpcClient_rejectsSettingsGetWithEmptyParamsArray() = runTest {
     val client = AxiimRpcClient()
-    // Must throw IllegalArgumentException before touching network
-    client.call("settings.get", buildJsonArray {})
+    // Must be blocked before touching the network (and must not throw into the caller's scope)
+    assertNull(client.call("settings.get", buildJsonArray {}))
+    assertTrue(client.rpcLog.value.first().contains("Blocked settings.get"))
+  }
+
+  @Test
+  fun speakerLayout_snapsToGridAlignsAndClamps() {
+    // Grid snap when nothing is nearby
+    val grid = SpeakerLayout.snap(Offset(0.33f, 0.71f), emptyList())
+    assertEquals(0.35f, grid.position.x, 0.0001f)
+    assertEquals(0.70f, grid.position.y, 0.0001f)
+    assertNull(grid.alignedX)
+
+    // Aligns to another speaker's x within the threshold instead of the grid
+    val aligned = SpeakerLayout.snap(Offset(0.52f, 0.81f), listOf(Offset(0.5f, 0.14f)))
+    assertEquals(0.5f, aligned.position.x, 0.0001f)
+    assertEquals(0.5f, aligned.alignedX!!, 0.0001f)
+    assertEquals(0.80f, aligned.position.y, 0.0001f)
+
+    // Clamped inside the room
+    val clamped = SpeakerLayout.snap(Offset(-1f, 2f), emptyList())
+    assertTrue(clamped.position.x >= SpeakerLayout.MIN && clamped.position.y <= SpeakerLayout.MAX)
+
+    // Round-trips through the prefs encoding
+    val saved = mapOf("02:EA:31:00:A3:58" to Offset(0.5f, 0.8f))
+    assertEquals(saved, SpeakerLayout.decode(SpeakerLayout.encode(saved)))
+  }
+
+  @Test
+  fun playToQServer_parsesByteRanges() {
+    assertEquals(0L..999L, PlayToQHttpServer.parseRange("bytes=0-", 1000))
+    assertEquals(100L..199L, PlayToQHttpServer.parseRange("bytes=100-199", 1000))
+    assertEquals(900L..999L, PlayToQHttpServer.parseRange("bytes=-100", 1000))
+    assertEquals(500L..999L, PlayToQHttpServer.parseRange("bytes=500-5000", 1000))
+    assertNull(PlayToQHttpServer.parseRange("bytes=1000-", 1000))
+    assertNull(PlayToQHttpServer.parseRange("bytes=abc-", 1000))
   }
 
   @Test
