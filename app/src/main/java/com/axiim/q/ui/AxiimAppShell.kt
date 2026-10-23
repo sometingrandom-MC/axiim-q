@@ -114,7 +114,7 @@ enum class AppDestinations(
 }
 
 @Composable
-fun AxiimAppShell() {
+fun AxiimAppShell(restoredFromBackground: Boolean = false) {
   val view = LocalView.current
   val haptic = LocalHapticFeedback.current
   // Owned by a ViewModel so rotation / theme changes don't spawn a second repository with its own
@@ -124,6 +124,13 @@ fun AxiimAppShell() {
   val state by repository.state.collectAsStateWithLifecycle()
 
   var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
+  // After Android kills the app in the background, returning shows a snapshot of the old screen first.
+  // Replaying the entrance over that snapshot looks like a glitch, so the first screen renders in place;
+  // tab switches after that animate as usual.
+  val firstDestination = remember { currentDestination }
+  var hasNavigated by remember { mutableStateOf(false) }
+  if (currentDestination != firstDestination) hasNavigated = true
+  val skipEntrance = restoredFromBackground && !hasNavigated
   var showDeviceDialog by rememberSaveable { mutableStateOf(false) }
 
   val backdropGraphicsLayer = rememberGraphicsLayer()
@@ -208,7 +215,7 @@ fun AxiimAppShell() {
                 }
 
               Box(modifier = Modifier.animatedBlur { blurRadius.value }.fillMaxSize()) {
-                StaggeredEntranceScope {
+                StaggeredEntranceScope(animate = !skipEntrance) {
                   when (destination) {
                     AppDestinations.HOME -> DashboardScreen(state = state, repository = repository)
                     AppDestinations.AUDIO -> WisaEqScreen(state = state, repository = repository)
@@ -280,82 +287,84 @@ fun AxiimAppShell() {
             )
           }
 
-          StaggeredEntrance(index = 2) {
-            Box(
-              modifier =
-                Modifier
-                  .onGloballyPositioned { coords ->
-                    pillRootOffset = coords.positionInRoot()
-                  }
-                  .clip(RoundedCornerShape(25.dp)),
-              contentAlignment = Alignment.Center,
-            ) {
-              // Real-time backdrop blur of the screen content behind the Connected Pill
+          StaggeredEntranceScope(animate = !restoredFromBackground) {
+            StaggeredEntrance(index = 2) {
               Box(
                 modifier =
                   Modifier
-                    .matchParentSize()
-                    .blur(18.dp)
-                    .drawWithContent {
-                      translate(left = -pillRootOffset.x, top = -pillRootOffset.y) {
-                        drawLayer(backdropGraphicsLayer)
-                      }
-                    },
-              )
-
-              // Tap = reconnect to the current Q, hold = choose a different device. AssistChip has no
-              // long-click, so a hold is detected from its press interactions.
-              val pillInteractions = remember { MutableInteractionSource() }
-              var pillLongPressed by remember { mutableStateOf(false) }
-              val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
-              LaunchedEffect(pillInteractions) {
-                var holdJob: Job? = null
-                pillInteractions.interactions.collect { interaction ->
-                  when (interaction) {
-                    is PressInteraction.Press -> {
-                      pillLongPressed = false
-                      holdJob?.cancel()
-                      holdJob =
-                        launch {
-                          delay(longPressTimeout)
-                          pillLongPressed = true
-                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                          repository.runSsdpDiscoverySweep()
-                          showDeviceDialog = true
-                        }
+                    .onGloballyPositioned { coords ->
+                      pillRootOffset = coords.positionInRoot()
                     }
-                    is PressInteraction.Release, is PressInteraction.Cancel -> holdJob?.cancel()
+                    .clip(RoundedCornerShape(25.dp)),
+                contentAlignment = Alignment.Center,
+              ) {
+                // Real-time backdrop blur of the screen content behind the Connected Pill
+                Box(
+                  modifier =
+                    Modifier
+                      .matchParentSize()
+                      .blur(18.dp)
+                      .drawWithContent {
+                        translate(left = -pillRootOffset.x, top = -pillRootOffset.y) {
+                          drawLayer(backdropGraphicsLayer)
+                        }
+                      },
+                )
+
+                // Tap = reconnect to the current Q, hold = choose a different device. AssistChip has no
+                // long-click, so a hold is detected from its press interactions.
+                val pillInteractions = remember { MutableInteractionSource() }
+                var pillLongPressed by remember { mutableStateOf(false) }
+                val longPressTimeout = LocalViewConfiguration.current.longPressTimeoutMillis
+                LaunchedEffect(pillInteractions) {
+                  var holdJob: Job? = null
+                  pillInteractions.interactions.collect { interaction ->
+                    when (interaction) {
+                      is PressInteraction.Press -> {
+                        pillLongPressed = false
+                        holdJob?.cancel()
+                        holdJob =
+                          launch {
+                            delay(longPressTimeout)
+                            pillLongPressed = true
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            repository.runSsdpDiscoverySweep()
+                            showDeviceDialog = true
+                          }
+                      }
+                      is PressInteraction.Release, is PressInteraction.Cancel -> holdJob?.cancel()
+                    }
                   }
                 }
-              }
 
-              AssistChip(
-                label = { Text(statusText) },
-                onClick = {
-                  if (pillLongPressed) {
-                    pillLongPressed = false
-                  } else {
-                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    repository.reconnect()
-                  }
-                },
-                leadingIcon = {
-                  Icon(
-                    imageVector = Icons.Filled.Circle,
-                    contentDescription = null,
-                    tint = statusColor,
-                    modifier = Modifier.size(10.dp),
-                  )
-                },
-                shape = RoundedCornerShape(25.dp),
-                border = null,
-                colors =
-                  AssistChipDefaults.assistChipColors(
-                    containerColor = Color.Transparent,
-                  ),
-                interactionSource = pillInteractions,
-                modifier = Modifier.glassEffect(cornerRadius = 25.dp, alpha = 0.2f),
-              )
+                AssistChip(
+                  label = { Text(statusText) },
+                  onClick = {
+                    if (pillLongPressed) {
+                      pillLongPressed = false
+                    } else {
+                      view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                      repository.reconnect()
+                    }
+                  },
+                  leadingIcon = {
+                    Icon(
+                      imageVector = Icons.Filled.Circle,
+                      contentDescription = null,
+                      tint = statusColor,
+                      modifier = Modifier.size(10.dp),
+                    )
+                  },
+                  shape = RoundedCornerShape(25.dp),
+                  border = null,
+                  colors =
+                    AssistChipDefaults.assistChipColors(
+                      containerColor = Color.Transparent,
+                    ),
+                  interactionSource = pillInteractions,
+                  modifier = Modifier.glassEffect(cornerRadius = 25.dp, alpha = 0.2f),
+                )
+              }
             }
           }
         }

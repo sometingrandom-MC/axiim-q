@@ -57,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -457,8 +458,12 @@ private val LocalStaggerOrigin = compositionLocalOf<Long?> { null }
  * revealed by a toggle) render immediately instead of popping in with a delay.
  */
 @Composable
-fun StaggeredEntranceScope(content: @Composable () -> Unit) {
-  val origin = remember { SystemClock.uptimeMillis() }
+fun StaggeredEntranceScope(
+  animate: Boolean = true,
+  content: @Composable () -> Unit,
+) {
+  // An origin far in the past puts every child outside the entrance window, so it renders in place.
+  val origin = remember { if (animate) SystemClock.uptimeMillis() else 0L }
   CompositionLocalProvider(LocalStaggerOrigin provides origin, content = content)
 }
 
@@ -814,11 +819,13 @@ fun TypewriterText(
   lineHeight: TextUnit = style.lineHeight,
 ) {
   var visibleCharCount by remember(stableKey) { mutableIntStateOf(0) }
-  var hasFinished by remember(stableKey) { mutableStateOf(false) }
+  // Saved so that returning after Android killed the app in the background shows the finished text
+  // instead of retyping it over the restored screen.
+  var hasFinished by rememberSaveable(stableKey) { mutableStateOf(false) }
 
   LaunchedEffect(stableKey) {
+    if (hasFinished) return@LaunchedEffect
     visibleCharCount = 0
-    hasFinished = false
     for (i in text.indices) {
       delay(delayMillis)
       visibleCharCount = i + 1

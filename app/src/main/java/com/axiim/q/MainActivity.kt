@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
     if (materialYou) setTheme(R.style.Theme_AxiimQ_MaterialYou)
     super.onCreate(savedInstanceState)
     setContent {
-      AxiimAppShell()
+      AxiimAppShell(restoredFromBackground = savedInstanceState != null)
     }
   }
 }
