@@ -816,7 +816,7 @@ fun IntelligentStatusCard(
         modifier = Modifier.size(18.dp),
       )
       Text(
-        text = "AXIIM Q INTELLIGENCE",
+        text = "SYSTEM INSIGHTS",
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.Bold,
         color = if (isConnected) HoloBlueGlow else MaterialTheme.colorScheme.onSurfaceVariant,
