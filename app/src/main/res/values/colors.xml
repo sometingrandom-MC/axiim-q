@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window color shown before the first Compose frame. Sampled from the app's actual backdrop
+         (surface + glow gradient), not the plain surface, so launch hands off without a color jump. -->
+    <color name="launch_background">#FFD5EAF6</color>
+    <!-- Used when "Material You Colors" is on; follows the wallpaper on Android 14+ -->
+    <color name="launch_background_dynamic">@color/launch_background</color>
+</resources>

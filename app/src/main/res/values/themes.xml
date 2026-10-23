@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.AxiimQ" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.AxiimQ.Base" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/launch_background</item>
+    </style>
+
+    <!-- Built-in Axiim colors (default) -->
+    <style name="Theme.AxiimQ" parent="Theme.AxiimQ.Base" />
+
+    <!-- "Material You Colors" setting on -->
+    <style name="Theme.AxiimQ.MaterialYou" parent="Theme.AxiimQ.Base">
+        <item name="android:windowBackground">@color/launch_background_dynamic</item>
+    </style>
 </resources>

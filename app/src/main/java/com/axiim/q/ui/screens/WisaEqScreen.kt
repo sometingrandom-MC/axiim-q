@@ -481,6 +481,8 @@ private fun EqResponseCurveCanvas(
   bands: List<Float>,
   modifier: Modifier = Modifier,
 ) {
+  val holoCore = HoloBlueCore
+  val holoBright = HoloBlueBright
   Canvas(modifier = modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
     val w = size.width
     val h = size.height
@@ -526,19 +528,19 @@ private fun EqResponseCurveCanvas(
       path = fillPath,
       brush =
         Brush.verticalGradient(
-          colors = listOf(HoloBlueCore.copy(alpha = 0.35f), Color.Transparent),
+          colors = listOf(holoCore.copy(alpha = 0.35f), Color.Transparent),
         ),
     )
 
     drawPath(
       path = curvePath,
-      color = HoloBlueBright,
+      color = holoBright,
       style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
     )
 
     points.forEach { pt ->
       drawCircle(
-        color = HoloBlueBright,
+        color = holoBright,
         radius = 3.5.dp.toPx(),
         center = pt,
       )
@@ -556,6 +558,8 @@ private fun RoomSpeakerMapCard(
   onMoveSpeaker: (String, Offset) -> Unit,
   onResetLayout: () -> Unit,
 ) {
+  val holoCore = HoloBlueCore
+  val holoBright = HoloBlueBright
   val view = LocalView.current
   val haptic = LocalHapticFeedback.current
   val textMeasurer = rememberTextMeasurer()
@@ -698,12 +702,12 @@ private fun RoomSpeakerMapCard(
         Canvas(modifier = Modifier.fillMaxSize()) {
           val center = Offset(size.width * ListenerPosition.x, size.height * ListenerPosition.y)
           drawCircle(
-            color = HoloBlueCore.copy(alpha = 0.10f),
+            color = holoCore.copy(alpha = 0.10f),
             radius = size.minDimension * 0.36f,
             center = center,
           )
           drawCircle(
-            color = HoloBlueCore.copy(alpha = 0.25f),
+            color = holoCore.copy(alpha = 0.25f),
             radius = 8.dp.toPx(),
             center = center,
           )
@@ -713,7 +717,7 @@ private fun RoomSpeakerMapCard(
             val guide = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 6.dp.toPx()))
             snap.alignedX?.let { x ->
               drawLine(
-                color = HoloBlueBright.copy(alpha = 0.5f),
+                color = holoBright.copy(alpha = 0.5f),
                 start = Offset(x * size.width, 0f),
                 end = Offset(x * size.width, size.height),
                 strokeWidth = 1.dp.toPx(),
@@ -722,7 +726,7 @@ private fun RoomSpeakerMapCard(
             }
             snap.alignedY?.let { y ->
               drawLine(
-                color = HoloBlueBright.copy(alpha = 0.5f),
+                color = holoBright.copy(alpha = 0.5f),
                 start = Offset(0f, y * size.height),
                 end = Offset(size.width, y * size.height),
                 strokeWidth = 1.dp.toPx(),
@@ -746,7 +750,7 @@ private fun RoomSpeakerMapCard(
             drawLine(
               color =
                 if (isPlayingTone) {
-                  HoloBlueBright
+                  holoBright
                 } else {
                   Color.White.copy(alpha = 0.12f)
                 },
@@ -755,7 +759,7 @@ private fun RoomSpeakerMapCard(
               strokeWidth = if (isPlayingTone) 2.5.dp.toPx() else 1.dp.toPx(),
             )
             drawCircle(
-              color = if (isPlayingTone || isDragging) HoloBlueBright else HoloBlueCore,
+              color = if (isPlayingTone || isDragging) holoBright else holoCore,
               radius = radius,
               center = pos,
             )
@@ -771,7 +775,7 @@ private fun RoomSpeakerMapCard(
               }
             drawText(
               textLayoutResult = label,
-              color = if (isPlayingTone || isDragging) HoloBlueBright else labelColor,
+              color = if (isPlayingTone || isDragging) holoBright else labelColor,
               topLeft =
                 Offset(
                   (pos.x - label.size.width / 2f).coerceIn(0f, (size.width - label.size.width).coerceAtLeast(0f)),

@@ -68,6 +68,8 @@ data class AxiimUiState(
   val isLiveTcpConnected: Boolean = false,
   val isSimulatedPreview: Boolean = false,
   val enabledQuickTiles: List<QuickTileId> = QuickTileId.defaultIds,
+  /** App theme: false = built-in Axiim palette, true = follow the phone's Material You wallpaper colors. */
+  val materialYouColors: Boolean = false,
   val lastActiveEqPresetName: String = "custom",
   val firmwareVersion: String = "19.618.421",
   val powered: Boolean = true,
@@ -520,6 +522,12 @@ object DefaultLiveSnapshot {
     )
 }
 
+/** SharedPreferences shared by the repository and [com.axiim.q.MainActivity] (read before the first frame). */
+object AppPrefs {
+  const val FILE = "axiim_q_prefs"
+  const val MATERIAL_YOU_COLORS = "material_you_colors"
+}
+
 class AxiimRepository(private val context: Context?) {
   // Last line of defense: an unexpected exception in any background RPC / socket coroutine is
   // logged instead of taking the whole app down (the default handler kills the process).
@@ -528,7 +536,7 @@ class AxiimRepository(private val context: Context?) {
       Log.e(TAG, "Background task failed", throwable)
     }
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard)
-  private val prefs = context?.getSharedPreferences("axiim_q_prefs", Context.MODE_PRIVATE)
+  private val prefs = context?.getSharedPreferences(AppPrefs.FILE, Context.MODE_PRIVATE)
 
   val ssdpClient = SsdpDiscoveryClient(context)
   val rpcClient = AxiimRpcClient(scope)
@@ -591,6 +599,7 @@ class AxiimRepository(private val context: Context?) {
         devices = listOf(device),
         enabledQuickTiles = enabledTiles,
         speakerPositions = savedSpeakerPositions,
+        materialYouColors = prefs?.getBoolean(AppPrefs.MATERIAL_YOU_COLORS, false) ?: false,
         personalize = it.personalize.copy(deviceName = savedName, accentColor = savedAccent),
       )
     }
@@ -628,6 +637,11 @@ class AxiimRepository(private val context: Context?) {
   fun resetSpeakerPositions() {
     prefs?.edit()?.remove("speaker_positions")?.apply()
     _state.update { it.copy(speakerPositions = emptyMap()) }
+  }
+
+  fun setMaterialYouColors(enabled: Boolean) {
+    prefs?.edit()?.putBoolean(AppPrefs.MATERIAL_YOU_COLORS, enabled)?.apply()
+    _state.update { it.copy(materialYouColors = enabled) }
   }
 
   fun resetQuickTilesToDefault() {

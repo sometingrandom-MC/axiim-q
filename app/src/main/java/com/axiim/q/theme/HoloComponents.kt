@@ -330,6 +330,8 @@ fun Modifier.holoGlow(
       label = "pulse",
     )
 
+  val palette = LocalHoloPalette.current
+
   val glowAlpha by
     animateFloatAsState(
       targetValue = if (isGlowing) intensity else 0f,
@@ -353,7 +355,7 @@ fun Modifier.holoGlow(
             Brush.radialGradient(
               colors =
                 listOf(
-                  HoloBlueGlow.copy(alpha = 0.30f * glowAlpha),
+                  palette.glow.copy(alpha = 0.30f * glowAlpha),
                   Color.Transparent,
                 ),
               center = Offset(t1 * size.width, t2 * size.height),
@@ -367,7 +369,7 @@ fun Modifier.holoGlow(
             Brush.radialGradient(
               colors =
                 listOf(
-                  HoloElectricBlue.copy(alpha = 0.22f * glowAlpha),
+                  palette.electric.copy(alpha = 0.22f * glowAlpha),
                   Color.Transparent,
                 ),
               center = Offset((1 - t2) * size.width, t3 * size.height),
@@ -381,7 +383,7 @@ fun Modifier.holoGlow(
             Brush.radialGradient(
               colors =
                 listOf(
-                  HoloCyanGlow.copy(alpha = 0.18f * glowAlpha * pulse),
+                  palette.cyan.copy(alpha = 0.18f * glowAlpha * pulse),
                   Color.Transparent,
                 ),
               center = Offset(t3 * size.width, (1 - t1) * size.height),
@@ -394,7 +396,7 @@ fun Modifier.holoGlow(
         drawRoundRect(
           brush =
             Brush.sweepGradient(
-              colors = listOf(HoloBlueGlow, HoloCyanGlow, HoloElectricBlue, HoloBlueGlow),
+              colors = listOf(palette.glow, palette.cyan, palette.electric, palette.glow),
               center = Offset(t2 * size.width, t1 * size.height),
             ),
           topLeft = Offset(halfStroke, halfStroke),

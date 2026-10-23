@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Android 12+ system splash: app icon on the launch color, dismissed on the first frame (no added delay).
+         The active one is chosen with SplashScreen.setSplashScreenTheme to match the color setting. -->
+    <style name="Theme.AxiimQ" parent="Theme.AxiimQ.Base">
+        <item name="android:windowSplashScreenBackground">@color/launch_background</item>
+    </style>
+
+    <style name="Theme.AxiimQ.MaterialYou" parent="Theme.AxiimQ.Base">
+        <item name="android:windowBackground">@color/launch_background_dynamic</item>
+        <item name="android:windowSplashScreenBackground">@color/launch_background_dynamic</item>
+    </style>
+</resources>

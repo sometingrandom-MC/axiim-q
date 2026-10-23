@@ -1,26 +1,55 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A "Q" drawn as a speaker driver: surround ring, dust-cap dome, and tail. Kept inside the 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Outer Holo Cyan Ring -->
+    <!-- Ring (r = 18) -->
     <path
-        android:fillColor="#00000000"
-        android:pathData="M54,54m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0"
-        android:strokeWidth="6.5"
-        android:strokeColor="#00FFBF" />
-    <!-- Inner Holo Blue Acoustic Ring -->
+        android:pathData="M54,36a18,18 0,1 1,0 36a18,18 0,1 1,0 -36"
+        android:strokeWidth="6.5">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="36"
+                android:startY="34"
+                android:endX="74"
+                android:endY="76">
+                <item android:offset="0" android:color="#FFB6F7FF" />
+                <item android:offset="1" android:color="#FF33B5E5" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Tail -->
     <path
-        android:fillColor="#00000000"
-        android:pathData="M54,54m-13,0a13,13 0,1 1,26 0a13,13 0,1 1,-26 0"
-        android:strokeWidth="3.5"
-        android:strokeColor="#33B5E5" />
-    <!-- Q Tail Slash -->
-    <path
-        android:fillColor="#00000000"
-        android:pathData="M62,62L78,78"
+        android:pathData="M63,63L73,73"
         android:strokeWidth="7"
-        android:strokeColor="#00FFBF"
-        android:strokeLineCap="round" />
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="36"
+                android:startY="34"
+                android:endX="74"
+                android:endY="76">
+                <item android:offset="0" android:color="#FFB6F7FF" />
+                <item android:offset="1" android:color="#FF33B5E5" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Dust-cap dome (r = 6) -->
+    <path android:pathData="M54,48a6,6 0,1 1,0 12a6,6 0,1 1,0 -12z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="51.5"
+                android:centerY="51.5"
+                android:gradientRadius="8">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FF7FE3FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

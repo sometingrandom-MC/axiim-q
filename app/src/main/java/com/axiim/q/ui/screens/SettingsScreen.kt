@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.SettingsInputHdmi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -71,6 +72,7 @@ import com.axiim.q.theme.GlassPopupDialog
 import com.axiim.q.theme.HoloBlueBright
 import com.axiim.q.theme.HoloBlueCore
 import com.axiim.q.theme.StaggeredEntrance
+import com.axiim.q.theme.supportsMaterialYouColors
 import com.axiim.q.theme.glassEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -401,8 +403,42 @@ fun SettingsScreen(
         }
       }
 
-      // Group 4: About & Connection
-      StaggeredEntrance(index = 3) {
+      // Group 4: App appearance (independent of the Q connection, so never dimmed)
+      if (supportsMaterialYouColors) {
+        StaggeredEntrance(index = 3) {
+          SettingsGroup(
+            title = "Appearance",
+            icon = Icons.Rounded.Palette,
+            alpha = 1.0f,
+          ) {
+            ListItem(
+              headlineContent = { Text("Material You Colors") },
+              supportingContent = {
+                Text(
+                  if (state.materialYouColors) {
+                    "Using your wallpaper colors throughout the app"
+                  } else {
+                    "Using the Axiim theme"
+                  },
+                )
+              },
+              trailingContent = {
+                Switch(
+                  checked = state.materialYouColors,
+                  onCheckedChange = {
+                    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    repository.setMaterialYouColors(it)
+                  },
+                )
+              },
+              colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
+          }
+        }
+      }
+
+      // Group 5: About & Connection
+      StaggeredEntrance(index = 4) {
         SettingsGroup(
           title = "About",
           icon = Icons.Rounded.Info,

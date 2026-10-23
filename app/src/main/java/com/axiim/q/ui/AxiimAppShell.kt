@@ -1,5 +1,7 @@
 package com.axiim.q.ui
 
+import android.app.Activity
+import android.os.Build
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -72,6 +74,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalView
@@ -80,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.axiim.q.model.DiscoveredDevice
+import com.axiim.q.R
 import com.axiim.q.theme.AnimatedBackground
 import com.axiim.q.theme.AxiimQTheme
 import com.axiim.q.theme.GlassPopupDialog
@@ -125,7 +129,18 @@ fun AxiimAppShell() {
   val backdropGraphicsLayer = rememberGraphicsLayer()
   var pillRootOffset by remember { mutableStateOf(Offset.Zero) }
 
-  AxiimQTheme {
+  // Android 13+ keeps a separate launch-screen theme; keep it in sync with the color setting
+  // so the next cold start fades in from the right background.
+  val activity = LocalContext.current as? Activity
+  LaunchedEffect(state.materialYouColors) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      activity?.splashScreen?.setSplashScreenTheme(
+        if (state.materialYouColors) R.style.Theme_AxiimQ_MaterialYou else R.style.Theme_AxiimQ,
+      )
+    }
+  }
+
+  AxiimQTheme(materialYouColors = state.materialYouColors) {
     Box(modifier = Modifier.fillMaxSize()) {
       // Main background + Scaffold recorded into backdropGraphicsLayer so the Connected Pill blurs content behind it
       Box(
