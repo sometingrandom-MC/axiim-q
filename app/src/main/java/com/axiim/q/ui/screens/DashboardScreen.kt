@@ -74,10 +74,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.axiim.q.data.AxiimRepository
 import com.axiim.q.data.AxiimUiState
 import com.axiim.q.model.EqualizerPreset
@@ -113,7 +111,7 @@ fun DashboardScreen(
 
   val statusTitle =
     when {
-      isConnected && state.powered -> "Playing from ${state.activeInput.label}"
+      isConnected && state.powered -> "Playing from ${state.activeInput.displayLabel}"
       isConnected && !state.powered -> "${state.selectedDevice.name} is in Standby"
       state.isConnecting || state.isDiscoveringSsdp -> "Searching for ${state.selectedDevice.name}..."
       else -> "${state.selectedDevice.name} Offline"
@@ -376,7 +374,7 @@ private fun VolumeAndSourceCard(
               fontWeight = FontWeight.Bold,
             )
             Text(
-              text = if (state.powered) "Running • ${state.activeInput.label}" else "Standby",
+              text = if (state.powered) "Running • ${state.activeInput.displayLabel}" else "Standby",
               style = MaterialTheme.typography.bodyMedium,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -401,40 +399,36 @@ private fun VolumeAndSourceCard(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
+        // Same title + subtitle treatment as the System Power row above
         Column {
           Text(
             text = "Master Volume",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
           )
-          Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-          ) {
+          // Large but light numerals: the value stays the focal point without shouting.
+          // Tabular digits keep it from shifting while the slider moves.
+          Row(verticalAlignment = Alignment.Bottom) {
             Text(
-              text = if (state.muted) "Muted" else "${state.volume}",
+              text = "${state.volume}",
               style =
                 MaterialTheme.typography.displaySmall.copy(
-                  fontFamily = FontFamily.Monospace,
-                  fontWeight = FontWeight.Bold,
-                  letterSpacing = (-1).sp,
+                  fontWeight = FontWeight.Light,
+                  fontFeatureSettings = "tnum",
                 ),
               color =
                 if (state.muted) {
-                  MaterialTheme.colorScheme.error
+                  MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 } else {
                   MaterialTheme.colorScheme.onSurface
                 },
             )
-            if (!state.muted) {
-              Text(
-                text = "%",
-                style = MaterialTheme.typography.titleMedium,
-                color = HoloBlueBright,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 6.dp),
-              )
-            }
+            Text(
+              text = if (state.muted) "  Muted" else "%",
+              style = MaterialTheme.typography.titleMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.padding(start = 2.dp, bottom = 6.dp),
+            )
           }
         }
 
@@ -449,13 +443,13 @@ private fun VolumeAndSourceCard(
               IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor =
                   if (state.muted) {
-                    MaterialTheme.colorScheme.errorContainer
+                    MaterialTheme.colorScheme.secondaryContainer
                   } else {
                     MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f)
                   },
                 contentColor =
                   if (state.muted) {
-                    MaterialTheme.colorScheme.onErrorContainer
+                    MaterialTheme.colorScheme.onSecondaryContainer
                   } else {
                     MaterialTheme.colorScheme.onSurface
                   },
@@ -531,8 +525,8 @@ private fun VolumeAndSourceCard(
             )
             Text(
               text = "HDMI Source",
-              style = MaterialTheme.typography.labelLarge,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.Bold,
             )
           }
 
@@ -567,7 +561,7 @@ private fun VolumeAndSourceCard(
               onClick = { onSelectInput(input.port) },
               label = {
                 Text(
-                  text = input.label.ifBlank { input.portDisplayName },
+                  text = input.displayLabel,
                   fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 )
               },

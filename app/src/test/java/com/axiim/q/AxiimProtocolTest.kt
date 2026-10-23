@@ -2,6 +2,7 @@ package com.axiim.q
 
 import com.axiim.q.model.QuickTileId
 import androidx.compose.ui.geometry.Offset
+import com.axiim.q.model.AvrInput
 import com.axiim.q.model.SpeakerChannel
 import com.axiim.q.model.SpeakerLayout
 import com.axiim.q.network.AxiimRpcClient
@@ -92,6 +93,14 @@ class AxiimProtocolTest {
     // Must be blocked before touching the network (and must not throw into the caller's scope)
     assertNull(client.call("settings.get", buildJsonArray {}))
     assertTrue(client.rpcLog.value.first().contains("Blocked settings.get"))
+  }
+
+  @Test
+  fun avrInput_displayLabelAddsPortNumberToGenericHdmiNames() {
+    assertEquals("HDMI 3", AvrInput(port = 3, label = "HDMI").displayLabel)
+    assertEquals("HDMI 4", AvrInput(port = 4, label = " ").displayLabel)
+    assertEquals("SHIELD", AvrInput(port = 2, label = "SHIELD").displayLabel)
+    assertEquals("axiim Q", AvrInput(port = 0, label = "axiim Q").displayLabel)
   }
 
   @Test

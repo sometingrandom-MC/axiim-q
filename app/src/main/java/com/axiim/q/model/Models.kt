@@ -143,6 +143,13 @@ data class AvrInput(
 ) {
   val portDisplayName: String
     get() = if (port == 0) "Axiim Q" else "HDMI $port"
+
+  /** Name shown in the UI: generic "HDMI" labels get their port number so inputs are distinguishable. */
+  val displayLabel: String
+    get() {
+      val clean = label.trim()
+      return if (clean.isEmpty() || (port != 0 && clean.equals("HDMI", ignoreCase = true))) portDisplayName else clean
+    }
 }
 
 data class WisaSpeaker(

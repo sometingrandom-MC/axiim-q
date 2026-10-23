@@ -85,6 +85,7 @@ import com.axiim.q.theme.AxiimQTheme
 import com.axiim.q.theme.GlassPopupDialog
 import com.axiim.q.theme.HoloBlueBright
 import com.axiim.q.theme.StaggeredEntrance
+import com.axiim.q.theme.animatedBlur
 import com.axiim.q.theme.StaggeredEntranceScope
 import com.axiim.q.theme.StatusConnectedGreen
 import com.axiim.q.theme.StatusScanningAmber
@@ -183,7 +184,7 @@ fun AxiimAppShell() {
               label = "screenTransition",
               modifier = Modifier.fillMaxSize(),
             ) { destination ->
-              val blurRadius by
+              val blurRadius =
                 transition.animateDp(
                   label = "blur",
                   transitionSpec = { tween(600) },
@@ -191,14 +192,7 @@ fun AxiimAppShell() {
                   if (targetState == EnterExitState.Visible) 0.dp else 16.dp
                 }
 
-              Box(
-                modifier =
-                  if (blurRadius > 0.dp) {
-                    Modifier.blur(blurRadius).fillMaxSize()
-                  } else {
-                    Modifier.fillMaxSize()
-                  },
-              ) {
+              Box(modifier = Modifier.animatedBlur { blurRadius.value }.fillMaxSize()) {
                 StaggeredEntranceScope {
                   when (destination) {
                     AppDestinations.HOME -> DashboardScreen(state = state, repository = repository)

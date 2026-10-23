@@ -104,7 +104,6 @@ data class AxiimUiState(
   val bluetoothDiscoverableActive: Boolean = false,
   val lastRemoteKeySent: RemoteKey? = null,
   val statusBannerMessage: String? = null,
-  val rpcTrafficLog: List<String> = emptyList(),
 ) {
   val activeInput: AvrInput
     get() = inputs.firstOrNull { it.active } ?: inputs.firstOrNull() ?: DefaultLiveSnapshot.defaultInputs[2]
@@ -656,11 +655,6 @@ class AxiimRepository(private val context: Context?) {
             isSimulatedPreview = false,
           )
         }
-      }
-    }
-    scope.launch {
-      rpcClient.rpcLog.collect { logs ->
-        _state.update { it.copy(rpcTrafficLog = logs) }
       }
     }
     scope.launch {

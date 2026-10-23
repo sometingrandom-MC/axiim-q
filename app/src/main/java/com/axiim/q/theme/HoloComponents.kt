@@ -8,6 +8,7 @@ import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -26,6 +27,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -65,13 +68,21 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PointMode
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -85,6 +96,7 @@ import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.random.Random
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Ambient animated background from BLE-Control (`AnimatedBackground.kt`),
@@ -181,6 +193,10 @@ fun AnimatedBackground(modifier: Modifier = Modifier) {
   )
 }
 
+/** Seed-42 grain positions (normalized x,y pairs), identical to the per-surface `Random(42)` sequence. */
+private val GlassNoise: FloatArray =
+  Random(42).let { random -> FloatArray(2000) { random.nextFloat() } }
+
 /**
  * Glassmorphic surface modifier from BLE-Control (`Glassmorphism.kt`) with micro-grain
  * noise, specular diagonal highlight, and inset rounded border so the border is never clipped at corners.
@@ -197,11 +213,12 @@ fun Modifier.glassEffect(
   return this
     .clip(RoundedCornerShape(cornerRadius))
     .drawWithCache {
+      // Same seeded grain as before, but the random sequence is generated once for the whole app
+      // instead of on every recomposition, and drawn as one batched call instead of ~1000 circles.
       val noiseCount = (size.width * size.height / 100).toInt().coerceIn(0, 1000)
-      val random = Random(42)
       val noisePoints =
-        List(noiseCount) {
-          Offset(random.nextFloat() * size.width, random.nextFloat() * size.height)
+        List(noiseCount) { i ->
+          Offset(GlassNoise[2 * i] * size.width, GlassNoise[2 * i + 1] * size.height)
         }
 
       val specularBrush =
@@ -231,13 +248,14 @@ fun Modifier.glassEffect(
       val cornerRadiusPx = (cornerRadius.toPx() - halfStroke).coerceAtLeast(0f)
 
       onDrawBehind {
-        noisePoints.forEach { point ->
-          drawCircle(
-            color = Color.White.copy(alpha = 0.05f),
-            radius = 1f,
-            center = point,
-          )
-        }
+        // A round 2 px point is exactly the former radius-1 circle.
+        drawPoints(
+          points = noisePoints,
+          pointMode = PointMode.Points,
+          color = Color.White.copy(alpha = 0.05f),
+          strokeWidth = 2f,
+          cap = StrokeCap.Round,
+        )
         drawRect(brush = specularBrush)
         drawRect(color = finalColor.copy(alpha = alpha))
         drawRoundRect(
@@ -402,6 +420,28 @@ fun Modifier.holoGlow(
   intensity: Float = 1f,
 ): Modifier = holoGlow(isGlowing = isActive, cornerRadius = borderRadius, intensity = intensity)
 
+private const val MIN_VISIBLE_BLUR_DP = 1f
+
+/**
+ * Pixel-identical to `Modifier.blur(radius)` (rectangle edge treatment), but the radius is read in
+ * the draw layer instead of composition: animating it no longer recomposes the content every frame,
+ * and the layer isn't torn down when the radius reaches 0 (which caused a hitch at the end).
+ */
+fun Modifier.animatedBlur(radius: () -> Dp): Modifier =
+  graphicsLayer {
+    val px = radius().toPx()
+    // Below ~1 dp the blur is invisible but still costs a full offscreen pass on the GPU; skipping
+    // that tail of each 16 dp -> 0 animation removes a large share of transition jank.
+    if (px > MIN_VISIBLE_BLUR_DP.dp.toPx()) {
+      renderEffect = BlurEffect(px, px, TileMode.Clamp)
+      shape = RectangleShape
+      clip = true
+    } else {
+      renderEffect = null
+      clip = false
+    }
+  }
+
 /** How long after a screen or dialog opens its [StaggeredEntrance] children still play an entrance. */
 private const val STAGGER_WINDOW_MS = 450L
 private const val STAGGER_STEP_MS = 100L
@@ -431,32 +471,33 @@ fun StaggeredEntrance(
 ) {
   val origin = LocalStaggerOrigin.current
   val shouldAnimate = remember { origin == null || SystemClock.uptimeMillis() - origin < STAGGER_WINDOW_MS }
-  var visible by remember { mutableStateOf(!shouldAnimate) }
+
+  // Same motion as the original AnimatedVisibility(slideInVertically { it / 2 } + fadeIn(tween(600)))
+  // with a 16 dp -> 0 blur, but the content is composed immediately (invisible) instead of on its
+  // delayed turn, so building each card no longer lands in the middle of the running animation.
+  val alpha = remember { Animatable(if (shouldAnimate) 0f else 1f) }
+  val slideFraction = remember { Animatable(if (shouldAnimate) 0.5f else 0f) }
+  val blurDp = remember { Animatable(if (shouldAnimate) 16f else 0f) }
   LaunchedEffect(Unit) {
-    if (!visible) {
+    if (shouldAnimate) {
       delay((index * STAGGER_STEP_MS).coerceIn(0L, STAGGER_MAX_DELAY_MS))
-      visible = true
+      launch { alpha.animateTo(1f, tween(600)) }
+      launch { blurDp.animateTo(0f, tween(600)) }
+      // AnimatedVisibility's default slide spec
+      slideFraction.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.001f))
     }
   }
 
-  AnimatedVisibility(
-    visible = visible,
-    enter = slideInVertically { it / 2 } + fadeIn(animationSpec = tween(600)),
-    exit = fadeOut(animationSpec = tween(400)),
+  Box(
+    modifier =
+      Modifier
+        .graphicsLayer {
+          this.alpha = alpha.value
+          translationY = slideFraction.value * size.height
+        }
+        .animatedBlur { blurDp.value.dp },
   ) {
-    val blurRadius by
-      transition.animateDp(
-        label = "blur",
-        transitionSpec = { tween(600) },
-      ) { state ->
-        if (state == EnterExitState.Visible) 0.dp else 16.dp
-      }
-
-    Box(
-      modifier = if (blurRadius > 0.dp) Modifier.blur(blurRadius) else Modifier,
-    ) {
-      content()
-    }
+    content()
   }
 }
 
@@ -483,7 +524,12 @@ fun QuickSettingTile(
   bottomContent: @Composable (() -> Unit)? = null,
 ) {
   val interactionSource = remember { MutableInteractionSource() }
-  val isPressed by interactionSource.collectIsPressedAsState()
+  val isClickPressed by interactionSource.collectIsPressedAsState()
+  // Inside a scrolling screen, clickable delays its Press by ~100 ms to rule out a scroll, so a
+  // quick tap barely moved the spring. Track finger-down directly (as on BLE Control's
+  // non-scrolling home screen) and drop it if the touch turns into a scroll.
+  var isTouched by remember { mutableStateOf(false) }
+  val isPressed = isTouched || isClickPressed
   val view = LocalView.current
   val haptic = LocalHapticFeedback.current
 
@@ -558,6 +604,22 @@ fun QuickSettingTile(
             cornerRadius = cornerRadius,
             intensity = if (isAutoMode) 1.0f else 0.65f,
           )
+          .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+              awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+              isTouched = true
+              try {
+                while (true) {
+                  val event = awaitPointerEvent(PointerEventPass.Final)
+                  val scrolled = event.changes.any { it.isConsumed && it.positionChanged() }
+                  if (scrolled || event.changes.none { it.pressed }) break
+                }
+              } finally {
+                isTouched = false
+              }
+            }
+          }
           .combinedClickable(
             enabled = enabled,
             interactionSource = interactionSource,
