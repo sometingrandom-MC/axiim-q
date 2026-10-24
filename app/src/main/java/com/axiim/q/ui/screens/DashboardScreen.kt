@@ -1,6 +1,11 @@
 package com.axiim.q.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -69,6 +74,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -101,6 +107,24 @@ fun DashboardScreen(
 
   var showConfigureTilesDialog by remember { mutableStateOf(false) }
   var showEqPresetDialog by remember { mutableStateOf(false) }
+  val context = LocalContext.current
+  // Private Listen streams from a foreground service; ask for notifications first so its Stop control shows.
+  // The stream starts either way: the permission only affects whether the notification is visible.
+  val notificationPermissionLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+      repository.toggleIpAudioListenOnPhone()
+    }
+  val togglePrivateListen = {
+    val needsPrompt =
+      !state.ipAudio.isStreaming &&
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    if (needsPrompt) {
+      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+      repository.toggleIpAudioListenOnPhone()
+    }
+  }
 
   val controlsAlpha by
     animateFloatAsState(
@@ -247,6 +271,7 @@ fun DashboardScreen(
                     state = state,
                     repository = repository,
                     onOpenEqSheet = { showEqPresetDialog = true },
+                    onTogglePrivateListen = togglePrivateListen,
                   )
                 QuickSettingTile(
                   title = spec.title,
@@ -620,6 +645,7 @@ private fun resolveQuickTileSpec(
   state: AxiimUiState,
   repository: AxiimRepository,
   onOpenEqSheet: () -> Unit,
+  onTogglePrivateListen: () -> Unit,
 ): QuickTileSpec {
   return when (tileId) {
     QuickTileId.DTS_NEURAL -> {
@@ -693,7 +719,7 @@ private fun resolveQuickTileSpec(
         icon = Icons.Rounded.Headphones,
         isActive = active,
         isAutoMode = active,
-        onTap = { repository.toggleIpAudioListenOnPhone() },
+        onTap = onTogglePrivateListen,
       )
     }
     QuickTileId.LFE_BOOST -> {

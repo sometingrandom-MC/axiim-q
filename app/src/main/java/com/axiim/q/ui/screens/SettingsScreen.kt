@@ -68,12 +68,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.axiim.q.data.AxiimRepository
 import com.axiim.q.data.AxiimUiState
+import com.axiim.q.network.IpAudioReceiver
 import com.axiim.q.theme.GlassPopupDialog
 import com.axiim.q.theme.HoloBlueBright
 import com.axiim.q.theme.HoloBlueCore
 import com.axiim.q.theme.StaggeredEntrance
 import com.axiim.q.theme.supportsMaterialYouColors
 import com.axiim.q.theme.glassEffect
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -367,6 +369,45 @@ fun SettingsScreen(
             },
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
           )
+          HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+          )
+          Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Text(
+                text = "Private Listen Delay",
+                style = MaterialTheme.typography.bodyLarge,
+              )
+              Text(
+                text = "${state.privateListenDelayMs} ms",
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                color = HoloBlueBright,
+                fontWeight = FontWeight.Bold,
+              )
+            }
+            Text(
+              text = "Delays phone audio to line up with the TV picture. Adjust while listening",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+              value = state.privateListenDelayMs.toFloat(),
+              onValueChange = { repository.setPrivateListenDelay((it / 10).roundToInt() * 10) },
+              valueRange = 0f..IpAudioReceiver.MAX_EXTRA_DELAY_MS.toFloat(),
+              colors =
+                SliderDefaults.colors(
+                  thumbColor = HoloBlueBright,
+                  activeTrackColor = HoloBlueCore,
+                ),
+            )
+          }
           HorizontalDivider(
             modifier = Modifier.padding(horizontal = 16.dp),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),

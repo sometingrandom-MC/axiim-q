@@ -29,6 +29,7 @@ import com.axiim.q.model.WisaGroup
 import com.axiim.q.model.WisaSpeaker
 import com.axiim.q.network.AxiimRpcClient
 import com.axiim.q.network.IpAudioReceiver
+import com.axiim.q.network.IpAudioService
 import com.axiim.q.network.IpAudioState
 import com.axiim.q.network.ODataMediaClient
 import com.axiim.q.network.PlayToQHttpServer
@@ -70,6 +71,7 @@ data class AxiimUiState(
   val enabledQuickTiles: List<QuickTileId> = QuickTileId.defaultIds,
   /** App theme: false = built-in Axiim palette, true = follow the phone's Material You wallpaper colors. */
   val materialYouColors: Boolean = false,
+  val privateListenDelayMs: Int = 0,
   val lastActiveEqPresetName: String = "custom",
   val firmwareVersion: String = "19.618.421",
   val powered: Boolean = true,
@@ -526,6 +528,7 @@ object DefaultLiveSnapshot {
 object AppPrefs {
   const val FILE = "axiim_q_prefs"
   const val MATERIAL_YOU_COLORS = "material_you_colors"
+  const val PRIVATE_LISTEN_DELAY_MS = "private_listen_delay_ms"
 }
 
 class AxiimRepository(private val context: Context?) {
@@ -576,6 +579,8 @@ class AxiimRepository(private val context: Context?) {
     val savedAccent = prefs?.getString("zopa_accent", null) ?: DefaultLiveSnapshot.defaultDevice.accentColor
     val savedQuickTilesCsv = prefs?.getString("quick_tiles_csv", null)
     val savedSpeakerPositions = SpeakerLayout.decode(prefs?.getString("speaker_positions", null))
+    val savedPrivateListenDelay = prefs?.getInt(AppPrefs.PRIVATE_LISTEN_DELAY_MS, 0) ?: 0
+    ipAudioReceiver.extraDelayMs = savedPrivateListenDelay
     val enabledTiles =
       if (savedQuickTilesCsv != null) {
         savedQuickTilesCsv
@@ -600,6 +605,7 @@ class AxiimRepository(private val context: Context?) {
         enabledQuickTiles = enabledTiles,
         speakerPositions = savedSpeakerPositions,
         materialYouColors = prefs?.getBoolean(AppPrefs.MATERIAL_YOU_COLORS, false) ?: false,
+        privateListenDelayMs = savedPrivateListenDelay,
         personalize = it.personalize.copy(deviceName = savedName, accentColor = savedAccent),
       )
     }
@@ -644,6 +650,15 @@ class AxiimRepository(private val context: Context?) {
     _state.update { it.copy(materialYouColors = enabled) }
   }
 
+  /** Private Listen lip-sync calibration; applies live to a running stream. */
+  fun setPrivateListenDelay(delayMs: Int) {
+    val clamped = delayMs.coerceIn(0, IpAudioReceiver.MAX_EXTRA_DELAY_MS)
+    if (clamped == _state.value.privateListenDelayMs) return
+    ipAudioReceiver.extraDelayMs = clamped
+    prefs?.edit()?.putInt(AppPrefs.PRIVATE_LISTEN_DELAY_MS, clamped)?.apply()
+    _state.update { it.copy(privateListenDelayMs = clamped) }
+  }
+
   fun resetQuickTilesToDefault() {
     val defaults = QuickTileId.defaultIds
     saveQuickTiles(defaults)
@@ -685,8 +700,14 @@ class AxiimRepository(private val context: Context?) {
 
   private fun observeIpAudioAndHttpServer() {
     scope.launch {
+      var wasStreaming = false
       ipAudioReceiver.state.collect { ipState ->
         _state.update { it.copy(ipAudio = ipState) }
+        // Keep the process (and Wi-Fi) awake for the stream while the app is off screen
+        if (ipState.isStreaming != wasStreaming && context != null) {
+          wasStreaming = ipState.isStreaming
+          if (wasStreaming) IpAudioService.start(context) else IpAudioService.stop(context)
+        }
       }
     }
     scope.launch {
@@ -948,6 +969,8 @@ class AxiimRepository(private val context: Context?) {
 
   /** Cancels every background job and releases sockets. The repository is unusable afterwards. */
   fun close() {
+    IpAudioService.onStopRequested = null
+    context?.let { IpAudioService.stop(it) }
     ipAudioReceiver.stop()
     playToQServer.stop()
     rpcClient.disconnect()
@@ -1507,7 +1530,7 @@ class AxiimRepository(private val context: Context?) {
 
   fun toggleIpAudioListenOnPhone() {
     if (_state.value.ipAudio.isStreaming) {
-      ipAudioReceiver.stop()
+      stopIpAudioListenOnPhone()
     } else {
       val localIp = resolvePhoneLanIp()
       if (localIp == null) {
@@ -1516,7 +1539,42 @@ class AxiimRepository(private val context: Context?) {
       }
       if (!ipAudioReceiver.start(localIp, isSimulatedMode = _state.value.isSimulatedPreview)) {
         showBanner("Couldn't open an audio port on this phone")
+        return
       }
+      IpAudioService.onStopRequested = ::stopIpAudioListenOnPhone
+      muteSpeakersForPrivateListen()
+    }
+  }
+
+  private fun stopIpAudioListenOnPhone() {
+    ipAudioReceiver.stop()
+    restoreSpeakersAfterPrivateListen()
+  }
+
+  /** Whether Private Listen muted the Q itself, so stopping it should unmute (and only then). */
+  @Volatile private var mutedForPrivateListen = false
+
+  private fun muteSpeakersForPrivateListen() {
+    if (_state.value.isSimulatedPreview) return
+    scope.launch {
+      // The Q only exposes a mute toggle, so check the real state first instead of trusting the UI
+      val muted = rpcClient.getVolume()?.second ?: _state.value.muted
+      if (muted) return@launch
+      rpcClient.toggleMute()
+      mutedForPrivateListen = true
+      _state.update { it.copy(muted = true) }
+    }
+  }
+
+  private fun restoreSpeakersAfterPrivateListen() {
+    if (!mutedForPrivateListen) return
+    mutedForPrivateListen = false
+    scope.launch {
+      // Leave it alone if the user already unmuted during the session
+      val muted = rpcClient.getVolume()?.second ?: _state.value.muted
+      if (!muted) return@launch
+      rpcClient.toggleMute()
+      _state.update { it.copy(muted = false) }
     }
   }
 

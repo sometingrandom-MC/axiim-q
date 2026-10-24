@@ -3,6 +3,7 @@ package com.axiim.q.network
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.os.SystemClock
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -54,12 +55,25 @@ class IpAudioReceiver(
     const val RTP_HEADER_SIZE = 12
     const val KEEPALIVE_INTERVAL_MS = 28_000L
     const val JITTER_BUFFER_TARGET_MS = 80
+    // Once buffered audio exceeds the target by this much, drop the excess to catch back up with the TV
+    const val LATENCY_SLACK_MS = 40
+    const val TRACK_BUFFER_MS = 40
+    const val MAX_EXTRA_DELAY_MS = 500
     // 48,000 Hz * 2 channels * 2 bytes/sample = 192 bytes per ms
     const val BYTES_PER_MS = 192
   }
 
   private val _state = MutableStateFlow(IpAudioState())
   val state: StateFlow<IpAudioState> = _state.asStateFlow()
+
+  /**
+   * Lip-sync calibration: extra delay on top of the jitter buffer, for when the TV picture lags
+   * the phone (e.g. the Q's own A/V sync delay). Can change mid-stream.
+   */
+  @Volatile var extraDelayMs: Int = 0
+    set(value) {
+      field = value.coerceIn(0, MAX_EXTRA_DELAY_MS)
+    }
 
   private var udpSocket: DatagramSocket? = null
   private var receiveJob: Job? = null
@@ -74,7 +88,8 @@ class IpAudioReceiver(
       return true
     }
 
-    val pcmQueue = LinkedBlockingQueue<ByteArray>(256)
+    // Sized to hold the jitter buffer plus the largest calibration delay
+    val pcmQueue = LinkedBlockingQueue<ByteArray>(4096)
     val socket =
       try {
         DatagramSocket(null).apply {
@@ -151,7 +166,7 @@ class IpAudioReceiver(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT,
-          ).coerceAtLeast(SAMPLE_RATE / 5)
+          ).coerceAtLeast(TRACK_BUFFER_MS * BYTES_PER_MS)
 
         val audioTrack =
           runCatching {
@@ -169,7 +184,7 @@ class IpAudioReceiver(
                   .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                   .build(),
               )
-              .setBufferSizeInBytes(minBufSize * 2)
+              .setBufferSizeInBytes(minBufSize)
               .setTransferMode(AudioTrack.MODE_STREAM)
               .build()
           }.getOrNull()
@@ -180,23 +195,55 @@ class IpAudioReceiver(
           var prebuffering = true
           val prebufferQueue = mutableListOf<ByteArray>()
           var prebufferedBytes = 0
-          val targetPrebufferBytes = JITTER_BUFFER_TARGET_MS * BYTES_PER_MS
+          var appliedExtraDelayMs = extraDelayMs
+          var targetBytes = (JITTER_BUFFER_TARGET_MS + appliedExtraDelayMs) * BYTES_PER_MS
+          var framesWritten = 0L
+          // Android may grow the buffer a lot (e.g. ~360 ms on Bluetooth) and by default waits for it
+          // to fill before playing; start as soon as the jitter buffer is in instead.
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audioTrack.startThresholdInFrames = targetBytes / 4 }
+          }
 
           while (isActive) {
             val chunk = pcmQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
             if (prebuffering) {
               prebufferQueue.add(chunk)
               prebufferedBytes += chunk.size
-              if (prebufferedBytes >= targetPrebufferBytes) {
+              if (prebufferedBytes >= targetBytes) {
                 for (buffered in prebufferQueue) {
-                  audioTrack?.write(buffered, 0, buffered.size)
+                  framesWritten += audioTrack.write(buffered, 0, buffered.size).coerceAtLeast(0) / 4
                 }
                 prebufferQueue.clear()
                 prebuffering = false
               }
-            } else {
-              audioTrack?.write(chunk, 0, chunk.size)
+              continue
             }
+            val wantedExtraDelayMs = extraDelayMs
+            if (wantedExtraDelayMs != appliedExtraDelayMs) {
+              // A longer delay is added at once with silence; a shorter one by the drop below
+              if (wantedExtraDelayMs > appliedExtraDelayMs) {
+                val silence = ByteArray((wantedExtraDelayMs - appliedExtraDelayMs) * BYTES_PER_MS)
+                framesWritten += audioTrack.write(silence, 0, silence.size).coerceAtLeast(0) / 4
+              }
+              appliedExtraDelayMs = wantedExtraDelayMs
+              targetBytes = (JITTER_BUFFER_TARGET_MS + appliedExtraDelayMs) * BYTES_PER_MS
+            }
+            // Latency creeps up after every Wi-Fi stall (the burst that follows is queued, never
+            // skipped) and with clock drift between the Q and the phone. Keep the total delay
+            // (queued + inside the AudioTrack) near the target so the audio stays in sync with the TV.
+            // Only the queue is trimmed: the chunk in hand is always played, so playback can't stall.
+            // Nothing is trimmed until the track is actually playing, or its fill-up looks like backlog.
+            val playedFrames = audioTrack.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+            if (playedFrames > 0) {
+              val trackBytes = ((framesWritten - playedFrames) and 0xFFFFFFFFL) * 4
+              var queuedBytes = trackBytes + pcmQueue.size * chunk.size
+              if (queuedBytes > targetBytes + LATENCY_SLACK_MS * BYTES_PER_MS) {
+                while (queuedBytes > targetBytes && pcmQueue.poll() != null) {
+                  queuedBytes -= chunk.size
+                }
+              }
+            }
+            framesWritten += audioTrack.write(chunk, 0, chunk.size).coerceAtLeast(0) / 4
           }
         } catch (_: Exception) {
           // AudioTrack failure (e.g. audio focus/device change); stop playback quietly
